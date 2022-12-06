@@ -1,0 +1,9 @@
+[Core]
+Name = TextureSphericalMIP250
+Module = texture_spherical_MIP_250
+
+[Documentation]
+Author = Oane Gros
+Version = 0.0
+Website = todo
+Description = "TODO"
