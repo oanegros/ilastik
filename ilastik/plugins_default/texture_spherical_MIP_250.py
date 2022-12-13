@@ -22,6 +22,8 @@
 ###############################################################################
 from ilastik.plugins import ObjectFeaturesPlugin
 from ilastik.plugins_default.convex_hull_feature_description import fill_feature_description
+import ilastik.applets.objectExtraction.opObjectExtraction
+
 import vigra
 import numpy
 import logging
@@ -52,18 +54,18 @@ def cleanup(d, nObjects, features):
     return dict((k, result[k]) for k in newkeys)
 
 
-class TextureSphericalMIP(ObjectFeaturesPlugin):
-    local_preffix = "Spherical MIP harmonics 250"  # note the space at the end, it's important #TODO why????
+class TextureSphericalMIP250(ObjectFeaturesPlugin):
+    local_preffix = "Spherical MIP harmonics 250 "  # note the space at the end, it's important #TODO why????
     fineness = 250
     ndim = None
-    print('Im inside textureshperickalmip!!!!! ')
+    margin = 0
+    raysLUT = None
+
     def availableFeatures(self, image, labels):
 
         if labels.ndim == 3:
-            # names = vigra.analysis.supportedConvexHullFeatures(labels)
-            names = ['wave_' + str(i+1)  for i in range(250)] #TODO check if this should be a list
-            logger.debug("texturesphericalMIP250: names set.")
-            
+            names = ["wave_" + str(i + 1).zfill(3) for i in range(self.fineness)]  # TODO check if this should be a list
+
             tooltips = {}
             result = dict((n, {}) for n in names)
             result = self.fill_properties(result)
@@ -76,62 +78,73 @@ class TextureSphericalMIP(ObjectFeaturesPlugin):
 
     @staticmethod
     def fill_properties(features):
+        print("Im inside textureshperickalmip fill properties!!!!! ")
         # fill in the detailed information about the features.
         # features should be a dict with the feature_name as key.
         # NOTE, this function needs to be updated every time skeleton features change
-        # features = fill_feature_description(features)
         for feature in features:
-            features[feature]['displaytext'] = feature + " wave number of SH transform of spherical MIP "
-            features[feature]['detailtext'] = feature + " wave number of the spherical harmonics decomposition if a spherical maximum intensity projection from center is taken as a unit sphere circle."
+            features[feature]["displaytext"] = feature
+            features[feature][
+                "detailtext"
+            ] = " wave number of the spherical harmonics decomposition if a spherical maximum intensity projection from center is taken as a unit sphere circle."
+            features[feature]["margin"] = 0  # needs to be set to trigger compute_local
         return features
 
     def unwrap_and_expand(self, image, label_bboxes, axes):
         rawbbox = image
         mask_object, mask_both, mask_neigh = label_bboxes
-    # def _do_4d(self, image, labels, features, axes):
-
-    #     # ignoreLabel=None calculates background label parameters
-    #     # ignoreLabel=0 ignores calculation of background label parameters
-    #     assert isinstance(labels, vigra.VigraArray) and hasattr(labels, "axistags")
-    #     try:
-    #         result = vigra.analysis.extract3DConvexHullFeatures(labels.squeeze().astype(numpy.uint32), ignoreLabel=0)
-    #     except:
-    #         return dict() 
-
-    #     # find the number of objects
-    #     try:
-    #         nobj = result[features[0]].shape[0]
-    #     except Exception as e:
-    #         logger.error(
-    #             "Feature name not found in computed features.\n"
-    #             "Your project file might be using obsolete features.\n"
-    #             "Please select new features, and re-train your classifier.\n"
-    #             "(Exception was: {})".format(e)
-    #         )
-    #         raise  # FIXME: Consider using Python 3 raise ... from ... syntax here.
-
-    #     # NOTE: this removes the background object!!!
-    #     # The background object is always present (even if there is no 0 label) and is always removed here
-    #     return cleanup(result, nobj, features)
+        print(image.shape)
+        wavenames = ["wave_" + str(i + 1).zfill(3) for i in range(self.fineness)]
+        result = {}
+        for wavename in wavenames:
+            result[wavename] = 1
+        return result
 
     def _do_3d(self, image, label_bboxes, features, axes):
+        print("in do3d")
         kwargs = locals()
         del kwargs["self"]
         del kwargs["features"]
         kwargs["label_bboxes"] = kwargs.pop("label_bboxes")
         results = []
         features = list(features.keys())
-        if "lbp" in features:
-            results.append(self.lbp(**kwargs))
-        if "radii_ratio" in features:
-            results.append(self.radii_ratio(**kwargs))
+        results.append(self.unwrap_and_expand(image, label_bboxes, axes))
         return self.combine_dicts(results)
 
-
-
     def compute_local(self, image, binary_bbox, features, axes):
+        print("in compute local of spherical mip")
         margin = ilastik.applets.objectExtraction.opObjectExtraction.max_margin({"": features})
         passed, excl = ilastik.applets.objectExtraction.opObjectExtraction.make_bboxes(binary_bbox, margin)
         return self.do_channels(
             self._do_3d, image, label_bboxes=[binary_bbox, passed, excl], features=features, axes=axes
         )
+
+    # def compute_global(self, image, labels, features, axes):
+    #     return {}
+
+
+# def _do_4d(self, image, labels, features, axes):
+
+#     # ignoreLabel=None calculates background label parameters
+#     # ignoreLabel=0 ignores calculation of background label parameters
+#     assert isinstance(labels, vigra.VigraArray) and hasattr(labels, "axistags")
+#     try:
+#         result = vigra.analysis.extract3DConvexHullFeatures(labels.squeeze().astype(numpy.uint32), ignoreLabel=0)
+#     except:
+#         return dict()
+
+#     # find the number of objects
+#     try:
+#         nobj = result[features[0]].shape[0]
+#     except Exception as e:
+#         logger.error(
+#             "Feature name not found in computed features.\n"
+#             "Your project file might be using obsolete features.\n"
+#             "Please select new features, and re-train your classifier.\n"
+#             "(Exception was: {})".format(e)
+#         )
+#         raise  # FIXME: Consider using Python 3 raise ... from ... syntax here.
+
+#     # NOTE: this removes the background object!!!
+#     # The background object is always present (even if there is no 0 label) and is always removed here
+#     return cleanup(result, nobj, features)
