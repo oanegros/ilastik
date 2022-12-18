@@ -43,6 +43,9 @@ dependencies:
   - vigra 1.11.1=*_1033
   - xarray
   - z5py
+  - pyshtools 
+  - blosc <=1.21.0
+  - numba
 
   # Neural Network Workflow dependencies
   # can be changed to request gpu versions
