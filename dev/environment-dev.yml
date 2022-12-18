@@ -44,6 +44,9 @@ dependencies:
   - vigra
   - xarray
   - z5py
+  - pyshtools 
+  - blosc <=1.21.0
+  - numba
 
   # Spherical harmonics dependencies
   - pyshtools 
