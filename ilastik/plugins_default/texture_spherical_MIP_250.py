@@ -103,18 +103,30 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         # print(np.unique(mask_both))
         # print(np.unique(mask_neigh))
         # print(axes) - enum of zyxc
-        image[np.invert(mask_object)] = 0
+
+        # print("count nonzero mask:" ,np.count_nonzero(mask_object))
+        segmented = np.where(np.invert(mask_object), image, 0)
+        # image[np.invert(mask_object)] = 0
+        # print("count nonzero image: ", np.count_nonzero(image))
         fcentroid = np.array(image.shape, dtype=np.float32) / 2.0
-        unwrapped = project_spherical(image, fcentroid, self.fineness).T
+        unwrapped = project_spherical(segmented, fcentroid, self.fineness).T
         coeffs = SHExpandDH(unwrapped, sampling=2)
         power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
         # print(fcentroid)
+        print(power_per_dlogl[-1])
+
+        if power_per_dlogl[-1] == 0.0:
+            print("unwrapped: ", unwrapped, "orig shape: ", image.shape)
+            # print("unique values in image: ", np.unique(segmented))
+            print("count nonzero mask:", np.count_nonzero(mask_object))
+            print("count nonzero image: ", np.count_nonzero(segmented))
+            # print(s)
 
         wavenames = ["wave_" + str(i + 1).zfill(3) for i in range(self.fineness)]
         result = {}
         for ix, wavename in enumerate(wavenames):
             result[wavename] = power_per_dlogl[ix]
-        print(result)
+        # print(result)
         return result
 
     def _do_3d(self, image, label_bboxes, features, axes):
