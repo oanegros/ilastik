@@ -28,6 +28,11 @@ import vigra
 import numpy
 import logging
 
+import numpy as np
+from numba import jit
+from pyshtools.expand import SHExpandDH
+from pyshtools.spectralanalysis import spectrum
+
 logger = logging.getLogger(__name__)
 
 
@@ -93,11 +98,23 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
     def unwrap_and_expand(self, image, label_bboxes, axes):
         rawbbox = image
         mask_object, mask_both, mask_neigh = label_bboxes
-        print(image.shape)
+        # print(image.shape)
+        # print(np.unique(mask_object))
+        # print(np.unique(mask_both))
+        # print(np.unique(mask_neigh))
+        # print(axes) - enum of zyxc
+        image[np.invert(mask_object)] = 0
+        fcentroid = np.array(image.shape, dtype=np.float32) / 2.0
+        unwrapped = project_spherical(image, fcentroid, self.fineness).T
+        coeffs = SHExpandDH(unwrapped, sampling=2)
+        power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
+        # print(fcentroid)
+
         wavenames = ["wave_" + str(i + 1).zfill(3) for i in range(self.fineness)]
         result = {}
-        for wavename in wavenames:
-            result[wavename] = 1
+        for ix, wavename in enumerate(wavenames):
+            result[wavename] = power_per_dlogl[ix]
+        print(result)
         return result
 
     def _do_3d(self, image, label_bboxes, features, axes):
@@ -109,7 +126,10 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         results = []
         features = list(features.keys())
         results.append(self.unwrap_and_expand(image, label_bboxes, axes))
-        return self.combine_dicts(results)
+
+        # print(self.combine_dicts(results))
+        # print(results)
+        return results[0]
 
     def compute_local(self, image, binary_bbox, features, axes):
         print("in compute local of spherical mip")
@@ -119,32 +139,62 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
             self._do_3d, image, label_bboxes=[binary_bbox, passed, excl], features=features, axes=axes
         )
 
-    # def compute_global(self, image, labels, features, axes):
-    #     return {}
+
+@jit(nopython=True)
+def project_spherical(ch_data, centroid, fineness):
+    fineness = fineness * 4  # TODO refer to self.fineness for all instances - define by max wave_n
+    unwrapped = np.zeros((fineness, int(fineness / 2)), dtype=np.float64)
+    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness)
+    pirange = np.linspace(-1 * np.pi, 0 * np.pi, int(fineness / 2))
+    for phi_ix, phi in enumerate(pi2range):
+        for theta_ix, theta in enumerate(pirange):
+            unwrapped[phi_ix, theta_ix] = project_ray(ch_data, centroid, theta, phi)
+    return unwrapped
 
 
-# def _do_4d(self, image, labels, features, axes):
+@jit(nopython=True)
+def project_ray(ch_data, centroid, theta, phi, ellipse=True):
+    ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
+    # ray *= [meta_info['PhysicalSizeX'], meta_info['PhysicalSizeY'], meta_info['PhysicalSizeZ']]
+    if ellipse:
+        ray *= np.array(ch_data.shape)
+    ray /= np.linalg.norm(ray)
+    intensities = march(ray, centroid, ch_data)
+    # return phi
+    return np.amax(intensities)
 
-#     # ignoreLabel=None calculates background label parameters
-#     # ignoreLabel=0 ignores calculation of background label parameters
-#     assert isinstance(labels, vigra.VigraArray) and hasattr(labels, "axistags")
-#     try:
-#         result = vigra.analysis.extract3DConvexHullFeatures(labels.squeeze().astype(numpy.uint32), ignoreLabel=0)
-#     except:
-#         return dict()
 
-#     # find the number of objects
-#     try:
-#         nobj = result[features[0]].shape[0]
-#     except Exception as e:
-#         logger.error(
-#             "Feature name not found in computed features.\n"
-#             "Your project file might be using obsolete features.\n"
-#             "Please select new features, and re-train your classifier.\n"
-#             "(Exception was: {})".format(e)
-#         )
-#         raise  # FIXME: Consider using Python 3 raise ... from ... syntax here.
+@jit(nopython=True)
+def march(ray, centroid, data, marchlen=0.6):
+    increment = ray * marchlen
+    distances = []
+    normals = [np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0])]
+    bounds = [np.array(data.shape) - np.array([1.0, 1.0, 1.0]), np.array([0.0, 0.0, 0.0])]
+    for normal in normals:
+        for bound in bounds:
+            intersect = isect_dist_line_plane(centroid, ray, bound, normal)
+            distances.append(intersect)
+    est_length = min(distances) / marchlen
+    end = est_length * increment + centroid
+    pixels = (
+        np.linspace(centroid[0], end[0], int(est_length)),
+        np.linspace(centroid[1], end[1], int(est_length)),
+        np.linspace(centroid[2], end[2], int(est_length)),
+    )
+    pixels = np.stack(pixels).astype(np.int16).T
+    intensities = np.zeros(int(est_length))
+    for ix, pixel in enumerate(pixels):
+        intensities[ix] = data[pixel[0], pixel[1], pixel[2]]
+    return intensities
 
-#     # NOTE: this removes the background object!!!
-#     # The background object is always present (even if there is no 0 label) and is always removed here
-#     return cleanup(result, nobj, features)
+
+# intersection function edited from https://stackoverflow.com/questions/5666222/3d-line-plane-intersection
+@jit(nopython=True)
+def isect_dist_line_plane(centroid, raydir, planepoint, planenormal, epsilon=1e-6):
+    dot = np.dot(planenormal, raydir)
+    if np.abs(dot) > epsilon:
+        w = centroid - planepoint
+        fac = -np.dot(planenormal, w) / dot
+        if fac > 0:
+            return fac
+    return np.inf
