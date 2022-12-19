@@ -108,17 +108,14 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
 
         if self.raysLUT == None:
             print("recalculating LUT")  # TODO move to generate ray table functions
-            print(typeof(np.zeros((1, 3), dtype=np.int16)))
-            theta_rays = typed.Dict.empty(
-                key_type=types.float64,
-                value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
-            )
             rays = typed.Dict.empty(
-                key_type=types.float64,
-                value_type=typeof(theta_rays),  # base the d2 instance values of the type of d1
+                key_type=typeof((0.0, 0.0)),
+                value_type=typeof(np.zeros((1, 3), dtype=np.int16)),  # base the d2 instance values of the type of d1
             )
             t0 = time.time()
-            self.raysLUT = generate_ray_table(self.fineness, self.scale, rays, theta_rays)
+            self.raysLUT = generate_ray_table(self.fineness, self.scale, rays)
+            t1 = time.time()
+            print("time to make ray tayble: ", t1 - t0)
 
         segmented = np.where(np.invert(mask_object), image, 0)
         segmented_cube = resize(segmented, (self.scale, self.scale, self.scale), preserve_range=True)
@@ -130,7 +127,8 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
 
         coeffs = SHExpandDH(unwrapped, sampling=2)
         power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
-
+        t2 = time.time()
+        print("time to do spherical harmonics: ", t2 - t1)
         wavenames = ["wave_" + str(i + 1).zfill(3) for i in range(self.fineness)]
         result = {}
         for ix, wavename in enumerate(wavenames):
@@ -160,7 +158,7 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
 @jit(
     nopython=True
 )  # can not easily jit this as np.unique(axis=0) is not supported so needs some aux helper functions at the end of the doc
-def generate_ray_table(fineness, scale, rays, theta_rays):
+def generate_ray_table(fineness, scale, rays):
     fineness = fineness * 4
     dummy = np.zeros((scale, scale, scale), dtype=np.int16)
     centroid = np.array(dummy.shape, dtype=np.float32) / 2.0
@@ -168,14 +166,10 @@ def generate_ray_table(fineness, scale, rays, theta_rays):
     pirange = np.linspace(-1 * np.pi, 0 * np.pi, int(fineness / 2))
 
     for phi_ix, phi in enumerate(pi2range):
-        rays[phi] = theta_rays
         for theta_ix, theta in enumerate(pirange):
             ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
             pixels = nb_unique(march(ray, centroid, dummy, marchlen=0.4), axis=0)[0]
-            # print(typeof(pixels))
-            # exit()
-            rays[phi][theta] = pixels
-            # print(typeof(rays[phi][theta]))
+            rays[(phi, theta)] = pixels
     return rays
 
 
@@ -188,8 +182,8 @@ def lookup_spherical(data_rescaled, raysLUT, fineness):
     for phi_ix, phi in enumerate(pi2range):
         for theta_ix, theta in enumerate(pirange):
             # voxels = raysLUT[phi][theta]
-            values = np.zeros(raysLUT[phi][theta].shape[0])
-            for ix, voxel in enumerate(raysLUT[phi][theta]):
+            values = np.zeros(raysLUT[(phi, theta)].shape[0])
+            for ix, voxel in enumerate(raysLUT[(phi, theta)]):
                 values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
             unwrapped[phi_ix, theta_ix] = np.amax(values)
     return unwrapped
