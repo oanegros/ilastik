@@ -154,7 +154,7 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
     def generate_ray_table(self):
         print("recalculating LUT")  # TODO move to generate ray table functions
         rays = typed.Dict.empty(
-            key_type=typeof((0.0, 0.0)),
+            key_type=typeof((0.0, 0.0, 1, 1)),
             value_type=typeof(np.zeros((1, 3), dtype=np.int16)),  # base the d2 instance values of the type of d1
         )
         t0 = time.time()
@@ -164,10 +164,9 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         return
 
 
-@jit(
-    nopython=True
-)  # can not easily jit this as np.unique(axis=0) is not supported so needs some aux helper functions at the end of the doc
+@jit(nopython=True)
 def fill_ray_table(fineness, scale, rays):
+    # needs helper functions to jit
     fineness = fineness * 4
     dummy = np.zeros((scale, scale, scale), dtype=np.int16)
     centroid = np.array(dummy.shape, dtype=np.float32) / 2.0
@@ -178,25 +177,18 @@ def fill_ray_table(fineness, scale, rays):
         for theta_ix, theta in enumerate(pirange):
             ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
             pixels = nb_unique(march(ray, centroid, dummy, marchlen=0.3), axis=0)[0]
-            rays[(phi, theta)] = pixels
+            rays[(phi, theta, phi_ix, theta_ix)] = pixels
     return rays
 
 
 @jit(nopython=True)
 def lookup_spherical(data_rescaled, raysLUT, fineness, dct):
-    # split projection and unpack to 2d array for speed - this seems to work
+    unwrapped = np.zeros((fineness * 4, int(fineness * 2)), dtype=np.float64)
     for k, v in raysLUT.items():
         values = np.zeros(v.shape[0])
         for ix, voxel in enumerate(v):
             values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
-        dct[k] = np.amax(values)
-    fineness = fineness * 4
-    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness)
-    pirange = np.linspace(-1 * np.pi, 0 * np.pi, int(fineness / 2))
-    unwrapped = np.zeros((fineness, int(fineness / 2)), dtype=np.float64)
-    for phi_ix, phi in enumerate(pi2range):
-        for theta_ix, theta in enumerate(pirange):
-            unwrapped[phi_ix, theta_ix] = dct[(phi, theta)]
+        unwrapped[int(k[2]), int(k[3])] = np.amax(values)
     return unwrapped
 
 
