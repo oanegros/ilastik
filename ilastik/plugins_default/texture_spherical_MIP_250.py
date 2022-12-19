@@ -29,10 +29,12 @@ import numpy
 import logging
 
 import numpy as np
-from numba import jit
+from numba import jit, typeof, typed, types
 from skimage.transform import resize
 from pyshtools.expand import SHExpandDH
 from pyshtools.spectralanalysis import spectrum
+from numba.extending import overload, register_jitable
+from numba.core.errors import TypingError
 
 # temp
 import time
@@ -106,10 +108,19 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
 
         if self.raysLUT == None:
             print("recalculating LUT")
+            print(typeof(np.zeros((1, 3), dtype=np.int16)))
+            theta_rays = typed.Dict.empty(
+                key_type=types.float64,
+                value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
+            )
+            rays = typed.Dict.empty(
+                key_type=types.float64,
+                value_type=typeof(theta_rays),  # base the d2 instance values of the type of d1
+            )
             t0 = time.time()
-            self.raysLUT = generate_ray_table(self.fineness, self.scale)
+            self.raysLUT = generate_ray_table(self.fineness, self.scale, rays, theta_rays)
             print("time to make ray tayble: ", time.time() - t0)
-            print(self.raysLUT.keys())
+            # print(self.raysLUT.keys())
             print("hey")
         # print("count nonzero mask:" ,np.count_nonzero(mask_object))
         segmented = np.where(np.invert(mask_object), image, 0)
@@ -118,17 +129,17 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         fcentroid = np.array(image.shape, dtype=np.float32) / 2.0
 
         segmented_cube = resize(segmented, (self.scale, self.scale, self.scale), preserve_range=True)
-        print(np.max(segmented), np.max(segmented_cube))
+        # print(np.max(segmented), np.max(segmented_cube))
         t0 = time.time()
         unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness).T
         t1 = time.time()
         print("time to lookup ray tayble: ", t1 - t0)
-        print(unwrapped)
+        # print(unwrapped)
         # unwrapped = project_spherical(segmented, fcentroid, self.fineness).T
         coeffs = SHExpandDH(unwrapped, sampling=2)
         power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
         # print(fcentroid)
-        print(power_per_dlogl[-1])
+        # print(power_per_dlogl[-1])
 
         wavenames = ["wave_" + str(i + 1).zfill(3) for i in range(self.fineness)]
         result = {}
@@ -160,25 +171,29 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         )
 
 
-# @jit(nopython=True)
-def generate_ray_table(fineness, scale):
+@jit(
+    nopython=True
+)  # can not easily jit this as np.unique(axis=0) is not supported, people have written jittable nb_unique which i may copy if necessary later
+def generate_ray_table(fineness, scale, rays, theta_rays):
     fineness = fineness * 4
-    dummy = np.zeros((scale, scale, scale))
+    dummy = np.zeros((scale, scale, scale), dtype=np.int16)
     centroid = np.array(dummy.shape, dtype=np.float32) / 2.0
     pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness)
     pirange = np.linspace(-1 * np.pi, 0 * np.pi, int(fineness / 2))
 
-    rays = {}
     for phi_ix, phi in enumerate(pi2range):
-        print(phi_ix)
-        rays[phi] = {}
+        rays[phi] = theta_rays
         for theta_ix, theta in enumerate(pirange):
             ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
-            pixels = np.unique(march(ray, centroid, dummy, marchlen=0.4), axis=0)
+            pixels = nb_unique(march(ray, centroid, dummy, marchlen=0.4), axis=0)[0]
+            # print(typeof(pixels))
+            # exit()
             rays[phi][theta] = pixels
+            # print(typeof(rays[phi][theta]))
     return rays
 
 
+@jit(nopython=True)
 def lookup_spherical(data_rescaled, raysLUT, fineness):
     fineness = fineness * 4
     unwrapped = np.zeros((fineness, int(fineness / 2)), dtype=np.float64)
@@ -186,8 +201,11 @@ def lookup_spherical(data_rescaled, raysLUT, fineness):
     pirange = np.linspace(-1 * np.pi, 0 * np.pi, int(fineness / 2))
     for phi_ix, phi in enumerate(pi2range):
         for theta_ix, theta in enumerate(pirange):
-            voxels = raysLUT[phi][theta]
-            unwrapped[phi_ix, theta_ix] = max([data_rescaled[tuple(voxel)] for voxel in raysLUT[phi][theta]])
+            # voxels = raysLUT[phi][theta]
+            values = np.zeros(raysLUT[phi][theta].shape[0])
+            for ix, voxel in enumerate(raysLUT[phi][theta]):
+                values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
+            unwrapped[phi_ix, theta_ix] = np.amax(values)
     return unwrapped
 
 
@@ -249,3 +267,129 @@ def isect_dist_line_plane(centroid, raydir, planepoint, planenormal, epsilon=1e-
         if fac > 0:
             return fac
     return np.inf
+
+
+# ----  numba helper functions ----
+
+
+@jit(nopython=True, cache=True)
+def nb_unique(input_data, axis=0):
+    """2D np.unique(a, return_index=True, return_counts=True)
+
+    Parameters
+    ----------
+    input_data : 2D numeric array
+    axis : int, optional
+        axis along which to identify unique slices, by default 0
+    Returns
+    -------
+    2D array
+        unique rows (or columns) from the input array
+    1D array of ints
+        indices of unique rows (or columns) in input array
+    1D array of ints
+        number of instances of each unique row
+    """
+
+    # don't want to sort original data
+    if axis == 1:
+        data = input_data.T.copy()
+
+    else:
+        data = input_data.copy()
+
+    # so we can remember the original indexes of each row
+    orig_idx = np.array([i for i in range(data.shape[0])])
+
+    # sort our data AND the original indexes
+    for i in range(data.shape[1] - 1, -1, -1):
+        sorter = data[:, i].argsort(kind="mergesort")
+
+        # mergesort to keep associations
+        data = data[sorter]
+        orig_idx = orig_idx[sorter]
+    # get original indexes
+    idx = [0]
+
+    if data.shape[1] > 1:
+        bool_idx = ~np.all((data[:-1] == data[1:]), axis=1)
+        additional_uniques = np.nonzero(bool_idx)[0] + 1
+
+    else:
+        additional_uniques = np.nonzero(~(data[:-1] == data[1:]))[0] + 1
+
+    idx = np.append(idx, additional_uniques)
+    # get counts for each unique row
+    counts = np.append(idx[1:], data.shape[0])
+    counts = counts - idx
+    return data[idx], orig_idx[idx], counts
+
+
+@overload(np.all)
+def np_all(x, axis=None):
+
+    # ndarray.all with axis arguments for 2D arrays.
+
+    @register_jitable
+    def _np_all_axis0(arr):
+        out = np.logical_and(arr[0], arr[1])
+        for v in iter(arr[2:]):
+            for idx, v_2 in enumerate(v):
+                out[idx] = np.logical_and(v_2, out[idx])
+        return out
+
+    @register_jitable
+    def _np_all_flat(x):
+        out = x.all()
+        return out
+
+    @register_jitable
+    def _np_all_axis1(arr):
+        out = np.logical_and(arr[:, 0], arr[:, 1])
+        for idx, v in enumerate(arr[:, 2:]):
+            for v_2 in iter(v):
+                out[idx] = np.logical_and(v_2, out[idx])
+        return out
+
+    if isinstance(axis, types.Optional):
+        axis = axis.type
+
+    if not isinstance(axis, (types.Integer, types.NoneType)):
+        raise TypingError("'axis' must be 0, 1, or None")
+
+    if not isinstance(x, types.Array):
+        raise TypingError("Only accepts NumPy ndarray")
+
+    if not (1 <= x.ndim <= 2):
+        raise TypingError("Only supports 1D or 2D NumPy ndarrays")
+
+    if isinstance(axis, types.NoneType):
+
+        def _np_all_impl(x, axis=None):
+            return _np_all_flat(x)
+
+        return _np_all_impl
+
+    elif x.ndim == 1:
+
+        def _np_all_impl(x, axis=None):
+            return _np_all_flat(x)
+
+        return _np_all_impl
+
+    elif x.ndim == 2:
+
+        def _np_all_impl(x, axis=None):
+            if axis == 0:
+                return _np_all_axis0(x)
+            else:
+                return _np_all_axis1(x)
+
+        return _np_all_impl
+
+    else:
+
+        def _np_all_impl(x, axis=None):
+            return _np_all_flat(x)
+
+        return _np_all_impl
