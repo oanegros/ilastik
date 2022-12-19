@@ -90,7 +90,6 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
 
     @staticmethod
     def fill_properties(features):
-        print("Im inside textureshperickalmip fill properties!!!!! ")
         # fill in the detailed information about the features.
         # features should be a dict with the feature_name as key.
         # NOTE, this function needs to be updated every time skeleton features change
@@ -107,24 +106,21 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         mask_object, mask_both, mask_neigh = label_bboxes
 
         if self.raysLUT == None:
-            print("recalculating LUT")  # TODO move to generate ray table functions
-            rays = typed.Dict.empty(
-                key_type=typeof((0.0, 0.0)),
-                value_type=typeof(np.zeros((1, 3), dtype=np.int16)),  # base the d2 instance values of the type of d1
-            )
-            t0 = time.time()
-            self.raysLUT = generate_ray_table(self.fineness, self.scale, rays)
-            t1 = time.time()
-            print("time to make ray tayble: ", t1 - t0)
+            self.generate_ray_table()
 
         segmented = np.where(np.invert(mask_object), image, 0)
         segmented_cube = resize(segmented, (self.scale, self.scale, self.scale), preserve_range=True)
 
         t0 = time.time()
-        unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness).T
+        # necessary to declare typed dictionary for Numba
+        unwrapped_dct = typed.Dict.empty(
+            key_type=typeof((0.0, 0.0)),
+            value_type=types.float64,  # base the d2 instance values of the type of d1
+        )
+        unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, unwrapped_dct).T
+
         t1 = time.time()
         print("time to lookup ray tayble: ", t1 - t0)
-
         coeffs = SHExpandDH(unwrapped, sampling=2)
         power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
         t2 = time.time()
@@ -133,6 +129,7 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         result = {}
         for ix, wavename in enumerate(wavenames):
             result[wavename] = power_per_dlogl[ix]
+        # print(result)
         return result
 
     def _do_3d(self, image, label_bboxes, features, axes):
@@ -154,11 +151,23 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
             self._do_3d, image, label_bboxes=[binary_bbox, passed, excl], features=features, axes=axes
         )
 
+    def generate_ray_table(self):
+        print("recalculating LUT")  # TODO move to generate ray table functions
+        rays = typed.Dict.empty(
+            key_type=typeof((0.0, 0.0)),
+            value_type=typeof(np.zeros((1, 3), dtype=np.int16)),  # base the d2 instance values of the type of d1
+        )
+        t0 = time.time()
+        self.raysLUT = fill_ray_table(self.fineness, self.scale, rays)
+        t1 = time.time()
+        print("time to make ray tayble: ", t1 - t0)
+        return
+
 
 @jit(
     nopython=True
 )  # can not easily jit this as np.unique(axis=0) is not supported so needs some aux helper functions at the end of the doc
-def generate_ray_table(fineness, scale, rays):
+def fill_ray_table(fineness, scale, rays):
     fineness = fineness * 4
     dummy = np.zeros((scale, scale, scale), dtype=np.int16)
     centroid = np.array(dummy.shape, dtype=np.float32) / 2.0
@@ -168,56 +177,58 @@ def generate_ray_table(fineness, scale, rays):
     for phi_ix, phi in enumerate(pi2range):
         for theta_ix, theta in enumerate(pirange):
             ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
-            pixels = nb_unique(march(ray, centroid, dummy, marchlen=0.4), axis=0)[0]
+            pixels = nb_unique(march(ray, centroid, dummy, marchlen=0.3), axis=0)[0]
             rays[(phi, theta)] = pixels
     return rays
 
 
 @jit(nopython=True)
-def lookup_spherical(data_rescaled, raysLUT, fineness):
+def lookup_spherical(data_rescaled, raysLUT, fineness, dct):
+    # split projection and unpack to 2d array for speed - this seems to work
+    for k, v in raysLUT.items():
+        values = np.zeros(v.shape[0])
+        for ix, voxel in enumerate(v):
+            values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
+        dct[k] = np.amax(values)
     fineness = fineness * 4
-    unwrapped = np.zeros((fineness, int(fineness / 2)), dtype=np.float64)
     pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness)
     pirange = np.linspace(-1 * np.pi, 0 * np.pi, int(fineness / 2))
+    unwrapped = np.zeros((fineness, int(fineness / 2)), dtype=np.float64)
     for phi_ix, phi in enumerate(pi2range):
         for theta_ix, theta in enumerate(pirange):
-            # voxels = raysLUT[phi][theta]
-            values = np.zeros(raysLUT[(phi, theta)].shape[0])
-            for ix, voxel in enumerate(raysLUT[(phi, theta)]):
-                values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
-            unwrapped[phi_ix, theta_ix] = np.amax(values)
+            unwrapped[phi_ix, theta_ix] = dct[(phi, theta)]
     return unwrapped
 
 
-@jit(nopython=True)
-def project_spherical(ch_data, centroid, fineness):
-    fineness = fineness * 4  # TODO refer to self.fineness for all instances - define by max wave_n
-    unwrapped = np.zeros((fineness, int(fineness / 2)), dtype=np.float64)
-    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness)
-    pirange = np.linspace(-1 * np.pi, 0 * np.pi, int(fineness / 2))
-    for phi_ix, phi in enumerate(pi2range):
-        for theta_ix, theta in enumerate(pirange):
-            unwrapped[phi_ix, theta_ix] = project_ray(ch_data, centroid, theta, phi)
-    return unwrapped
+# @jit(nopython=True)
+# def project_spherical(ch_data, centroid, fineness):
+#     fineness = fineness * 4  # TODO refer to self.fineness for all instances - define by max wave_n
+#     unwrapped = np.zeros((fineness, int(fineness / 2)), dtype=np.float64)
+#     pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness)
+#     pirange = np.linspace(-1 * np.pi, 0 * np.pi, int(fineness / 2))
+#     for phi_ix, phi in enumerate(pi2range):
+#         for theta_ix, theta in enumerate(pirange):
+#             unwrapped[phi_ix, theta_ix] = project_ray(ch_data, centroid, theta, phi)
+#     return unwrapped
+
+
+# @jit(nopython=True)
+# def project_ray(ch_data, centroid, theta, phi, ellipse=True):
+#     ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
+#     # ray *= [meta_info['PhysicalSizeX'], meta_info['PhysicalSizeY'], meta_info['PhysicalSizeZ']]
+#     if ellipse:
+#         ray *= np.array(ch_data.shape)
+#     ray /= np.linalg.norm(ray)
+#     pixels = march(ray, centroid, ch_data)
+#     intensities = np.zeros(int(est_length))
+#     for ix, pixel in enumerate(pixels):
+#         intensities[ix] = data[pixel[0], pixel[1], pixel[2]]
+#     # return phi
+#     return np.amax(intensities)
 
 
 @jit(nopython=True)
-def project_ray(ch_data, centroid, theta, phi, ellipse=True):
-    ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
-    # ray *= [meta_info['PhysicalSizeX'], meta_info['PhysicalSizeY'], meta_info['PhysicalSizeZ']]
-    if ellipse:
-        ray *= np.array(ch_data.shape)
-    ray /= np.linalg.norm(ray)
-    pixels = march(ray, centroid, ch_data)
-    intensities = np.zeros(int(est_length))
-    for ix, pixel in enumerate(pixels):
-        intensities[ix] = data[pixel[0], pixel[1], pixel[2]]
-    # return phi
-    return np.amax(intensities)
-
-
-@jit(nopython=True)
-def march(ray, centroid, data, marchlen=0.6):
+def march(ray, centroid, data, marchlen):
     increment = ray * marchlen
     distances = []
     normals = [np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0])]
