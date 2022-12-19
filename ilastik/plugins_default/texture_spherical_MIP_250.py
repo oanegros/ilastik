@@ -107,7 +107,7 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         mask_object, mask_both, mask_neigh = label_bboxes
 
         if self.raysLUT == None:
-            print("recalculating LUT")
+            print("recalculating LUT")  # TODO move to generate ray table functions
             print(typeof(np.zeros((1, 3), dtype=np.int16)))
             theta_rays = typed.Dict.empty(
                 key_type=types.float64,
@@ -119,33 +119,22 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
             )
             t0 = time.time()
             self.raysLUT = generate_ray_table(self.fineness, self.scale, rays, theta_rays)
-            print("time to make ray tayble: ", time.time() - t0)
-            # print(self.raysLUT.keys())
-            print("hey")
-        # print("count nonzero mask:" ,np.count_nonzero(mask_object))
-        segmented = np.where(np.invert(mask_object), image, 0)
-        # image[np.invert(mask_object)] = 0
-        # print("count nonzero image: ", np.count_nonzero(image))
-        fcentroid = np.array(image.shape, dtype=np.float32) / 2.0
 
+        segmented = np.where(np.invert(mask_object), image, 0)
         segmented_cube = resize(segmented, (self.scale, self.scale, self.scale), preserve_range=True)
-        # print(np.max(segmented), np.max(segmented_cube))
+
         t0 = time.time()
         unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness).T
         t1 = time.time()
         print("time to lookup ray tayble: ", t1 - t0)
-        # print(unwrapped)
-        # unwrapped = project_spherical(segmented, fcentroid, self.fineness).T
+
         coeffs = SHExpandDH(unwrapped, sampling=2)
         power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
-        # print(fcentroid)
-        # print(power_per_dlogl[-1])
 
         wavenames = ["wave_" + str(i + 1).zfill(3) for i in range(self.fineness)]
         result = {}
         for ix, wavename in enumerate(wavenames):
             result[wavename] = power_per_dlogl[ix]
-        # print(result)
         return result
 
     def _do_3d(self, image, label_bboxes, features, axes):
@@ -157,9 +146,6 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         results = []
         features = list(features.keys())
         results.append(self.unwrap_and_expand(image, label_bboxes, axes))
-
-        # print(self.combine_dicts(results))
-        # print(results)
         return results[0]
 
     def compute_local(self, image, binary_bbox, features, axes):
@@ -173,7 +159,7 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
 
 @jit(
     nopython=True
-)  # can not easily jit this as np.unique(axis=0) is not supported, people have written jittable nb_unique which i may copy if necessary later
+)  # can not easily jit this as np.unique(axis=0) is not supported so needs some aux helper functions at the end of the doc
 def generate_ray_table(fineness, scale, rays, theta_rays):
     fineness = fineness * 4
     dummy = np.zeros((scale, scale, scale), dtype=np.int16)
@@ -270,6 +256,7 @@ def isect_dist_line_plane(centroid, raydir, planepoint, planenormal, epsilon=1e-
 
 
 # ----  numba helper functions ----
+# taken from https://github.com/numba/numba/issues/7663, by https://github.com/rishi-kulkarni
 
 
 @jit(nopython=True, cache=True)
