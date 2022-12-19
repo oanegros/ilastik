@@ -30,8 +30,12 @@ import logging
 
 import numpy as np
 from numba import jit
+from skimage.transform import resize
 from pyshtools.expand import SHExpandDH
 from pyshtools.spectralanalysis import spectrum
+
+# temp
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +69,7 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
     ndim = None
     margin = 0
     raysLUT = None
+    scale = int(fineness / np.pi)
 
     def availableFeatures(self, image, labels):
 
@@ -98,29 +103,32 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
     def unwrap_and_expand(self, image, label_bboxes, axes):
         rawbbox = image
         mask_object, mask_both, mask_neigh = label_bboxes
-        # print(image.shape)
-        # print(np.unique(mask_object))
-        # print(np.unique(mask_both))
-        # print(np.unique(mask_neigh))
-        # print(axes) - enum of zyxc
 
+        if self.raysLUT == None:
+            print("recalculating LUT")
+            t0 = time.time()
+            self.raysLUT = generate_ray_table(self.fineness, self.scale)
+            print("time to make ray tayble: ", time.time() - t0)
+            print(self.raysLUT.keys())
+            print("hey")
         # print("count nonzero mask:" ,np.count_nonzero(mask_object))
         segmented = np.where(np.invert(mask_object), image, 0)
         # image[np.invert(mask_object)] = 0
         # print("count nonzero image: ", np.count_nonzero(image))
         fcentroid = np.array(image.shape, dtype=np.float32) / 2.0
-        unwrapped = project_spherical(segmented, fcentroid, self.fineness).T
+
+        segmented_cube = resize(segmented, (self.scale, self.scale, self.scale), preserve_range=True)
+        print(np.max(segmented), np.max(segmented_cube))
+        t0 = time.time()
+        unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness).T
+        t1 = time.time()
+        print("time to lookup ray tayble: ", t1 - t0)
+        print(unwrapped)
+        # unwrapped = project_spherical(segmented, fcentroid, self.fineness).T
         coeffs = SHExpandDH(unwrapped, sampling=2)
         power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
         # print(fcentroid)
         print(power_per_dlogl[-1])
-
-        if power_per_dlogl[-1] == 0.0:
-            print("unwrapped: ", unwrapped, "orig shape: ", image.shape)
-            # print("unique values in image: ", np.unique(segmented))
-            print("count nonzero mask:", np.count_nonzero(mask_object))
-            print("count nonzero image: ", np.count_nonzero(segmented))
-            # print(s)
 
         wavenames = ["wave_" + str(i + 1).zfill(3) for i in range(self.fineness)]
         result = {}
@@ -152,6 +160,37 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         )
 
 
+# @jit(nopython=True)
+def generate_ray_table(fineness, scale):
+    fineness = fineness * 4
+    dummy = np.zeros((scale, scale, scale))
+    centroid = np.array(dummy.shape, dtype=np.float32) / 2.0
+    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness)
+    pirange = np.linspace(-1 * np.pi, 0 * np.pi, int(fineness / 2))
+
+    rays = {}
+    for phi_ix, phi in enumerate(pi2range):
+        print(phi_ix)
+        rays[phi] = {}
+        for theta_ix, theta in enumerate(pirange):
+            ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
+            pixels = np.unique(march(ray, centroid, dummy, marchlen=0.4), axis=0)
+            rays[phi][theta] = pixels
+    return rays
+
+
+def lookup_spherical(data_rescaled, raysLUT, fineness):
+    fineness = fineness * 4
+    unwrapped = np.zeros((fineness, int(fineness / 2)), dtype=np.float64)
+    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness)
+    pirange = np.linspace(-1 * np.pi, 0 * np.pi, int(fineness / 2))
+    for phi_ix, phi in enumerate(pi2range):
+        for theta_ix, theta in enumerate(pirange):
+            voxels = raysLUT[phi][theta]
+            unwrapped[phi_ix, theta_ix] = max([data_rescaled[tuple(voxel)] for voxel in raysLUT[phi][theta]])
+    return unwrapped
+
+
 @jit(nopython=True)
 def project_spherical(ch_data, centroid, fineness):
     fineness = fineness * 4  # TODO refer to self.fineness for all instances - define by max wave_n
@@ -171,7 +210,10 @@ def project_ray(ch_data, centroid, theta, phi, ellipse=True):
     if ellipse:
         ray *= np.array(ch_data.shape)
     ray /= np.linalg.norm(ray)
-    intensities = march(ray, centroid, ch_data)
+    pixels = march(ray, centroid, ch_data)
+    intensities = np.zeros(int(est_length))
+    for ix, pixel in enumerate(pixels):
+        intensities[ix] = data[pixel[0], pixel[1], pixel[2]]
     # return phi
     return np.amax(intensities)
 
@@ -194,10 +236,7 @@ def march(ray, centroid, data, marchlen=0.6):
         np.linspace(centroid[2], end[2], int(est_length)),
     )
     pixels = np.stack(pixels).astype(np.int16).T
-    intensities = np.zeros(int(est_length))
-    for ix, pixel in enumerate(pixels):
-        intensities[ix] = data[pixel[0], pixel[1], pixel[2]]
-    return intensities
+    return pixels
 
 
 # intersection function edited from https://stackoverflow.com/questions/5666222/3d-line-plane-intersection
