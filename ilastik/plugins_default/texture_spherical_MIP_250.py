@@ -166,12 +166,11 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
 
 @jit(nopython=True)
 def fill_ray_table(fineness, scale, rays):
-    # needs helper functions to jit
-    fineness = fineness * 4
+    # needs helper functions for np.unique and np.all to jit :(
     dummy = np.zeros((scale, scale, scale), dtype=np.int16)
     centroid = np.array(dummy.shape, dtype=np.float32) / 2.0
-    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness)
-    pirange = np.linspace(-1 * np.pi, 0 * np.pi, int(fineness / 2))
+    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness * 4)
+    pirange = np.linspace(-1 * np.pi, 0 * np.pi, fineness * 2)
 
     for phi_ix, phi in enumerate(pi2range):
         for theta_ix, theta in enumerate(pirange):
@@ -183,40 +182,13 @@ def fill_ray_table(fineness, scale, rays):
 
 @jit(nopython=True)
 def lookup_spherical(data_rescaled, raysLUT, fineness, dct):
-    unwrapped = np.zeros((fineness * 4, int(fineness * 2)), dtype=np.float64)
+    unwrapped = np.zeros((fineness * 4, fineness * 2), dtype=np.float64)
     for k, v in raysLUT.items():
         values = np.zeros(v.shape[0])
         for ix, voxel in enumerate(v):
             values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
         unwrapped[int(k[2]), int(k[3])] = np.amax(values)
     return unwrapped
-
-
-# @jit(nopython=True)
-# def project_spherical(ch_data, centroid, fineness):
-#     fineness = fineness * 4  # TODO refer to self.fineness for all instances - define by max wave_n
-#     unwrapped = np.zeros((fineness, int(fineness / 2)), dtype=np.float64)
-#     pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness)
-#     pirange = np.linspace(-1 * np.pi, 0 * np.pi, int(fineness / 2))
-#     for phi_ix, phi in enumerate(pi2range):
-#         for theta_ix, theta in enumerate(pirange):
-#             unwrapped[phi_ix, theta_ix] = project_ray(ch_data, centroid, theta, phi)
-#     return unwrapped
-
-
-# @jit(nopython=True)
-# def project_ray(ch_data, centroid, theta, phi, ellipse=True):
-#     ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
-#     # ray *= [meta_info['PhysicalSizeX'], meta_info['PhysicalSizeY'], meta_info['PhysicalSizeZ']]
-#     if ellipse:
-#         ray *= np.array(ch_data.shape)
-#     ray /= np.linalg.norm(ray)
-#     pixels = march(ray, centroid, ch_data)
-#     intensities = np.zeros(int(est_length))
-#     for ix, pixel in enumerate(pixels):
-#         intensities[ix] = data[pixel[0], pixel[1], pixel[2]]
-#     # return phi
-#     return np.amax(intensities)
 
 
 @jit(nopython=True)
