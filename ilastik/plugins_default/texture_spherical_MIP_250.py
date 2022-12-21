@@ -18,17 +18,21 @@
 # on the ilastik web site at:
 # 		   http://ilastik.org/license.html
 
-# Written by Oane Gros WIP
+# Plugin written by Oane Gros WIP
 ###############################################################################
+
+# core ilastik
 from ilastik.plugins import ObjectFeaturesPlugin
 from ilastik.plugins_default.convex_hull_feature_description import fill_feature_description
 import ilastik.applets.objectExtraction.opObjectExtraction
 
+# core
 import vigra
 import numpy
 import logging
-
 import numpy as np
+
+# transformations and speedup
 from numba import jit, typeof, typed, types
 from skimage.transform import resize
 from skimage import img_as_bool
@@ -36,6 +40,11 @@ from pyshtools.expand import SHExpandDH
 from pyshtools.spectralanalysis import spectrum
 from numba.extending import overload, register_jitable
 from numba.core.errors import TypingError
+
+# saving/loading LUT
+import pickle as pickle
+from pathlib import Path
+import copy
 
 # temp
 import time
@@ -67,7 +76,7 @@ def cleanup(d, nObjects, features):
 
 
 class TextureSphericalMIP250(ObjectFeaturesPlugin):
-    local_preffix = "Spherical MIP harmonics 250 "  # note the space at the end, it's important #TODO why????
+    local_preffix = "Spherical MIP harmonics 250 "  # note the space at the end, it's important #TODO why???? - this comment was in another file
     fineness = 250
     ndim = None
     margin = 0
@@ -110,18 +119,15 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         mask_object, mask_both, mask_neigh = label_bboxes
 
         if self.raysLUT == None:
-            self.generate_ray_table()
+            self.raysLUT = self.get_ray_table()
 
         cube = resize(image, (self.scale, self.scale, self.scale), preserve_range=True)
         mask_cube = img_as_bool(resize(mask_object, (self.scale, self.scale, self.scale), order=0))
         segmented_cube = np.where(np.invert(mask_cube), cube, -1)
         # necessary to declare typed dictionary for Numba
-        unwrapped_dct = typed.Dict.empty(
-            key_type=typeof((0, 0)),
-            value_type=types.float64,  # base the d2 instance values of the type of d1
-        )
+
         t1 = time.time()
-        unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, unwrapped_dct).T
+        unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness).T
 
         t2 = time.time()
         print("time to lookup ray tayble: ", t2 - t1)
@@ -151,31 +157,56 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
             self._do_3d, image, label_bboxes=[binary_bbox, passed, excl], features=features, axes=axes
         )
 
+    def save_ray_table(self, rays):
+        outLUT = {}  # need to un-type the dictionary for pickling
+        for k, v in rays.items():
+            outLUT[k] = v
+        outLUT["metadata"] = {"fineness": self.fineness}  # add more if distinguishing settings are made
+        with open(Path(__file__).parent / "sphericalLUT.pickle", "wb") as ofs:
+            pickle.dump(outLUT, ofs, protocol=pickle.HIGHEST_PROTOCOL)
+        return
+
+    def get_ray_table(self):
+        try:
+            t0 = time.time()
+            with open(Path(__file__).parent / "sphericalLUT.pickle", "rb") as handle:
+                newLUT = pickle.load(handle)
+            metadata = newLUT.pop("metadata")
+            assert metadata["fineness"] == self.fineness
+            typed_rays = typed.Dict.empty(
+                key_type=typeof((1, 1)),
+                value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
+            )
+            for k, v in newLUT.items():
+                typed_rays[k] = v
+            print("loaded ray table of fineness ", metadata["fineness"], " in: ", time.time() - t0)
+            return typed_rays
+        except:
+            return self.generate_ray_table()
+
     def generate_ray_table(self):
         # do all tasks outside of numba handling
-        # TODO ray table to/from file??
         print("recalculating LUT")
+        t0 = time.time()
         prerays = typed.Dict.empty(
             key_type=typeof((1, 1)),
-            value_type=typeof(np.zeros((1, 3), dtype=np.float64)),  # base the d2 instance values of the type of d1
+            value_type=typeof(np.zeros((1, 3), dtype=np.float64)),
         )
-        t0 = time.time()
         fill_ray_table(self.fineness, self.scale, prerays)
         # rounding instead of flooring is hard within numba, apparently.
         rays = typed.Dict.empty(
             key_type=typeof((1, 1)),
-            value_type=typeof(np.zeros((1, 3), dtype=np.int16)),  # base the d2 instance values of the type of d1
+            value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
         )
         for coord, ray in prerays.items():
             rays[coord] = np.round(ray).astype(np.int16)
-        self.raysLUT = rays
+        self.save_ray_table(rays)
         t1 = time.time()
-
         print("time to make ray table: ", t1 - t0)
-        return
+        return rays
 
 
-@jit(nopython=True, cache=True)
+@jit(nopython=True)
 def fill_ray_table(fineness, scale, rays):
     # needs helper functions for np.unique and np.all to jit :(
     dummy = np.zeros((scale, scale, scale), dtype=np.int16)
@@ -192,7 +223,7 @@ def fill_ray_table(fineness, scale, rays):
 
 
 @jit(nopython=True)
-def lookup_spherical(data_rescaled, raysLUT, fineness, dct):
+def lookup_spherical(data_rescaled, raysLUT, fineness):
     unwrapped = np.zeros((fineness * 4, fineness * 2), dtype=np.float64)
     for k, v in raysLUT.items():
         values = np.zeros(v.shape[0])
