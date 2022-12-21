@@ -76,7 +76,9 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
     def availableFeatures(self, image, labels):
 
         if labels.ndim == 3:
-            names = ["wave_" + str(i + 1).zfill(3) for i in range(self.fineness)]  # TODO check if this should be a list
+            names = [
+                "degree_" + str(i + 1).zfill(3) for i in range(self.fineness)
+            ]  # TODO check if this should be a list
 
             tooltips = {}
             result = dict((n, {}) for n in names)
@@ -107,14 +109,14 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
 
         if self.raysLUT == None:
             self.generate_ray_table()
-
+        # print(self.raysLUT)
         segmented = np.where(np.invert(mask_object), image, 0)
         segmented_cube = resize(segmented, (self.scale, self.scale, self.scale), preserve_range=True)
 
         t0 = time.time()
         # necessary to declare typed dictionary for Numba
         unwrapped_dct = typed.Dict.empty(
-            key_type=typeof((0.0, 0.0)),
+            key_type=typeof((0, 0)),
             value_type=types.float64,  # base the d2 instance values of the type of d1
         )
         unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, unwrapped_dct).T
@@ -125,7 +127,7 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
         t2 = time.time()
         print("time to do spherical harmonics: ", t2 - t1)
-        wavenames = ["wave_" + str(i + 1).zfill(3) for i in range(self.fineness)]
+        wavenames = ["degree_" + str(i + 1).zfill(3) for i in range(self.fineness)]
         result = {}
         for ix, wavename in enumerate(wavenames):
             result[wavename] = power_per_dlogl[ix]
@@ -154,7 +156,7 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
     def generate_ray_table(self):
         print("recalculating LUT")  # TODO move to generate ray table functions
         rays = typed.Dict.empty(
-            key_type=typeof((0.0, 0.0, 1, 1)),
+            key_type=typeof((1, 1)),
             value_type=typeof(np.zeros((1, 3), dtype=np.int16)),  # base the d2 instance values of the type of d1
         )
         t0 = time.time()
@@ -176,7 +178,7 @@ def fill_ray_table(fineness, scale, rays):
         for theta_ix, theta in enumerate(pirange):
             ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
             pixels = nb_unique(march(ray, centroid, dummy, marchlen=0.3), axis=0)[0]
-            rays[(phi, theta, phi_ix, theta_ix)] = pixels
+            rays[(phi_ix, theta_ix)] = pixels
     return rays
 
 
@@ -187,7 +189,7 @@ def lookup_spherical(data_rescaled, raysLUT, fineness, dct):
         values = np.zeros(v.shape[0])
         for ix, voxel in enumerate(v):
             values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
-        unwrapped[int(k[2]), int(k[3])] = np.amax(values)
+        unwrapped[k[0], k[1]] = np.amax(values)
     return unwrapped
 
 
@@ -208,7 +210,9 @@ def march(ray, centroid, data, marchlen):
         np.linspace(centroid[1], end[1], int(est_length)),
         np.linspace(centroid[2], end[2], int(est_length)),
     )
+    # pixels = np.around(np.stack(pixels)).T
     pixels = np.stack(pixels).astype(np.int16).T
+    # pixels = np.round_(pixels)
     return pixels
 
 
