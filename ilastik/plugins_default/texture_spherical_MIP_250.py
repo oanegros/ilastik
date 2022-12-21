@@ -31,6 +31,7 @@ import logging
 import numpy as np
 from numba import jit, typeof, typed, types
 from skimage.transform import resize
+from skimage import img_as_bool
 from pyshtools.expand import SHExpandDH
 from pyshtools.spectralanalysis import spectrum
 from numba.extending import overload, register_jitable
@@ -104,49 +105,46 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         return features
 
     def unwrap_and_expand(self, image, label_bboxes, axes):
+        t0 = time.time()
         rawbbox = image
         mask_object, mask_both, mask_neigh = label_bboxes
 
         if self.raysLUT == None:
             self.generate_ray_table()
-        # print(self.raysLUT)
-        segmented = np.where(np.invert(mask_object), image, 0)
-        segmented_cube = resize(segmented, (self.scale, self.scale, self.scale), preserve_range=True)
 
-        t0 = time.time()
+        cube = resize(image, (self.scale, self.scale, self.scale), preserve_range=True)
+        mask_cube = img_as_bool(resize(mask_object, (self.scale, self.scale, self.scale), order=0))
+        segmented_cube = np.where(np.invert(mask_cube), cube, -1)
         # necessary to declare typed dictionary for Numba
         unwrapped_dct = typed.Dict.empty(
             key_type=typeof((0, 0)),
             value_type=types.float64,  # base the d2 instance values of the type of d1
         )
+        t1 = time.time()
         unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, unwrapped_dct).T
 
-        t1 = time.time()
-        print("time to lookup ray tayble: ", t1 - t0)
+        t2 = time.time()
+        print("time to lookup ray tayble: ", t2 - t1)
+
         coeffs = SHExpandDH(unwrapped, sampling=2)
         power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
-        t2 = time.time()
-        print("time to do spherical harmonics: ", t2 - t1)
-        wavenames = ["degree_" + str(i + 1).zfill(3) for i in range(self.fineness)]
+
         result = {}
-        for ix, wavename in enumerate(wavenames):
-            result[wavename] = power_per_dlogl[ix]
-        # print(result)
+        for ix, wavenum in enumerate(range(self.fineness)):
+            result["degree_" + str(wavenum + 1).zfill(3)] = power_per_dlogl[ix]
+
+        t3 = time.time()
+        print("time to do full unwrap and expand: ", t3 - t0)
         return result
 
     def _do_3d(self, image, label_bboxes, features, axes):
         print("in do3d")
-        kwargs = locals()
-        del kwargs["self"]
-        del kwargs["features"]
-        kwargs["label_bboxes"] = kwargs.pop("label_bboxes")
         results = []
         features = list(features.keys())
         results.append(self.unwrap_and_expand(image, label_bboxes, axes))
         return results[0]
 
     def compute_local(self, image, binary_bbox, features, axes):
-        print("in compute local of spherical mip")
         margin = ilastik.applets.objectExtraction.opObjectExtraction.max_margin({"": features})
         passed, excl = ilastik.applets.objectExtraction.opObjectExtraction.make_bboxes(binary_bbox, margin)
         return self.do_channels(
@@ -155,7 +153,8 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
 
     def generate_ray_table(self):
         # do all tasks outside of numba handling
-        print("recalculating LUT")  # TODO move to generate ray table functions
+        # TODO ray table to/from file??
+        print("recalculating LUT")
         prerays = typed.Dict.empty(
             key_type=typeof((1, 1)),
             value_type=typeof(np.zeros((1, 3), dtype=np.float64)),  # base the d2 instance values of the type of d1
@@ -172,11 +171,11 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         self.raysLUT = rays
         t1 = time.time()
 
-        print("time to make ray tayble: ", t1 - t0)
+        print("time to make ray table: ", t1 - t0)
         return
 
 
-@jit(nopython=True)
+@jit(nopython=True, cache=True)
 def fill_ray_table(fineness, scale, rays):
     # needs helper functions for np.unique and np.all to jit :(
     dummy = np.zeros((scale, scale, scale), dtype=np.int16)
@@ -199,6 +198,9 @@ def lookup_spherical(data_rescaled, raysLUT, fineness, dct):
         values = np.zeros(v.shape[0])
         for ix, voxel in enumerate(v):
             values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
+            if values[ix] < 0:
+                # quit when outside of object mask - assumes convex shape
+                break
         unwrapped[k[0], k[1]] = np.amax(values)
     return unwrapped
 
