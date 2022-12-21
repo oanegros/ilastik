@@ -154,14 +154,24 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         )
 
     def generate_ray_table(self):
+        # do all tasks outside of numba handling
         print("recalculating LUT")  # TODO move to generate ray table functions
+        prerays = typed.Dict.empty(
+            key_type=typeof((1, 1)),
+            value_type=typeof(np.zeros((1, 3), dtype=np.float64)),  # base the d2 instance values of the type of d1
+        )
+        t0 = time.time()
+        fill_ray_table(self.fineness, self.scale, prerays)
+        # rounding instead of flooring is hard within numba, apparently.
         rays = typed.Dict.empty(
             key_type=typeof((1, 1)),
             value_type=typeof(np.zeros((1, 3), dtype=np.int16)),  # base the d2 instance values of the type of d1
         )
-        t0 = time.time()
-        self.raysLUT = fill_ray_table(self.fineness, self.scale, rays)
+        for coord, ray in prerays.items():
+            rays[coord] = np.round(ray).astype(np.int16)
+        self.raysLUT = rays
         t1 = time.time()
+
         print("time to make ray tayble: ", t1 - t0)
         return
 
@@ -211,7 +221,7 @@ def march(ray, centroid, data, marchlen):
         np.linspace(centroid[2], end[2], int(est_length)),
     )
     # pixels = np.around(np.stack(pixels)).T
-    pixels = np.stack(pixels).astype(np.int16).T
+    pixels = np.stack(pixels).T
     # pixels = np.round_(pixels)
     return pixels
 
