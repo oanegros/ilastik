@@ -44,7 +44,6 @@ from numba.core.errors import TypingError
 # saving/loading LUT
 import pickle as pickle
 from pathlib import Path
-import copy
 
 # temp
 import time
@@ -75,21 +74,24 @@ def cleanup(d, nObjects, features):
     return dict((k, result[k]) for k in newkeys)
 
 
-class TextureSphericalMIP250(ObjectFeaturesPlugin):
-    local_preffix = "Spherical MIP harmonics 250 "  # note the space at the end, it's important #TODO why???? - this comment was in another file
-    fineness = 250
+class TextureSphericalMAX(ObjectFeaturesPlugin):
+    local_preffix = "Spherical MAX harmonics"  # note the space at the end, it's important #TODO why???? - this comment was in another file
     ndim = None
     margin = 0
     raysLUT = None
-    scale = int(fineness / np.pi)
+
+    fineness = None
+    scale = 0
 
     def availableFeatures(self, image, labels):
 
         if labels.ndim == 3:
-            names = [
-                "degree_" + str(i + 1).zfill(3) for i in range(self.fineness)
-            ]  # TODO check if this should be a list
-
+            names = [  # compute_local actually uses the last number to set self.scale, so be careful changing
+                "resolution 10x10x10",
+                "resolution 20x20x20",
+                "resolution 40x40x40",
+                "resolution 80x80x80",
+            ]
             tooltips = {}
             result = dict((n, {}) for n in names)
             result = self.fill_properties(result)
@@ -109,7 +111,7 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
             features[feature]["displaytext"] = feature
             features[feature][
                 "detailtext"
-            ] = " wave number of the spherical harmonics decomposition if a spherical maximum intensity projection from center is taken as a unit sphere circle."
+            ] = " max resolution at which to do spherical harmonics decomposition of a spherical maximum intensity projection from the center."
             features[feature]["margin"] = 0  # needs to be set to trigger compute_local
         return features
 
@@ -137,7 +139,7 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
 
         result = {}
         for ix, wavenum in enumerate(range(self.fineness)):
-            result["degree_" + str(wavenum + 1).zfill(3)] = power_per_dlogl[ix]
+            result["degree_" + str(wavenum + 1).zfill(3)] = np.array([power_per_dlogl[ix], power_per_dlogl[ix]])
 
         t3 = time.time()
         print("time to do full unwrap and expand: ", t3 - t0)
@@ -151,6 +153,11 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         return results[0]
 
     def compute_local(self, image, binary_bbox, features, axes):
+        if self.fineness == None:
+            for featurename in features:
+                self.scale = max(self.scale, int(featurename.split(" ")[-1].split("x")[-1]))
+                self.fineness = int(np.pi * self.scale)
+            print(self.scale, self.fineness)
         margin = ilastik.applets.objectExtraction.opObjectExtraction.max_margin({"": features})
         passed, excl = ilastik.applets.objectExtraction.opObjectExtraction.make_bboxes(binary_bbox, margin)
         return self.do_channels(
@@ -162,7 +169,8 @@ class TextureSphericalMIP250(ObjectFeaturesPlugin):
         for k, v in rays.items():
             outLUT[k] = v
         outLUT["metadata"] = {"fineness": self.fineness}  # add more if distinguishing settings are made
-        with open(Path(__file__).parent / "sphericalLUT.pickle", "wb") as ofs:
+        name = "sphericalLUT" + str(self.scale) + ".pickle"
+        with open(Path(__file__).parent / name, "wb") as ofs:
             pickle.dump(outLUT, ofs, protocol=pickle.HIGHEST_PROTOCOL)
         return
 
