@@ -983,6 +983,7 @@ def make_feature_array(feats, selected, labels=None):
 
     if labels is not None:
         labelsMatrix = _concatenate(labellist, axis=0)
+        print(labelsMatrix)
         assert labelsMatrix.shape[0] == featMatrix.shape[0]
         return featMatrix, row_names, col_names, labelsMatrix
     return featMatrix, row_names, col_names

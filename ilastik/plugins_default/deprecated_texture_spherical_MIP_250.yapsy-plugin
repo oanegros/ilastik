@@ -1,6 +1,6 @@
 [Core]
 Name = TextureSphericalMIP250
-Module = texture_spherical_MIP_250
+Module = deprecated_texture_spherical_MIP_250
 
 [Documentation]
 Author = Oane Gros
