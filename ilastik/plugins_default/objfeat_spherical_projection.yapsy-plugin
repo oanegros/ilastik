@@ -1,0 +1,9 @@
+[Core]
+Name = Spherical projection
+Module = objfeat_spherical_projection
+
+[Documentation]
+Author = Oane Gros
+Version = 0.0
+Website = todo
+Description = "TODO"
