@@ -82,7 +82,7 @@ class TableExporter(ExportingOperator):
             return None, None
 
     def format_path(self, lane_index: int, path_format_string: str) -> str:
-        """ Takes the format string for the output file, fills in the most important placeholders, and returns it """
+        """Takes the format string for the output file, fills in the most important placeholders, and returns it"""
         assert self._path_formatter_factory is not None, "Path formatter factory is not set"
 
         path_formatter = self._path_formatter_factory.for_lane(lane_index)
@@ -983,6 +983,7 @@ def make_feature_array(feats, selected, labels=None):
 
     if labels is not None:
         labelsMatrix = _concatenate(labellist, axis=0)
+        print(labelsMatrix)
         assert labelsMatrix.shape[0] == featMatrix.shape[0]
         return featMatrix, row_names, col_names, labelsMatrix
     return featMatrix, row_names, col_names
