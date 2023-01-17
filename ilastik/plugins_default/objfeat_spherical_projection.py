@@ -78,7 +78,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
     local_preffix = "Spherical projections "  # note the space at the end, it's important #TODO why???? - this comment was in another file
     ndim = None
     margin = 0
-    projectionorder = ["MAX", "MIN", "MEAN", "SUM"]
+    projectionorder = ["MAX projection", "MIN projection", "SUM projection", "MEAN projection"]  # nee
 
     # Set in compute_local on first run:
     raysLUT = None
@@ -94,11 +94,9 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 "resolution 20x20x20",
                 "resolution 40x40x40",
                 "resolution 80x80x80",
-                "MIN projection",
-                "MAX projection",
-                "SUM projection",
-                "MEAN projection",
             ]
+            for proj in self.projectionorder:
+                names.append(proj)
             tooltips = {}
             result = dict((n, {}) for n in names)
             result = self.fill_properties(result)
@@ -129,7 +127,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
             features[feature]["margin"] = 0  # needs to be set to trigger compute_local
         return features
 
-    def unwrap_and_expand(self, image, label_bboxes, axes):
+    def unwrap_and_expand(self, image, label_bboxes, axes, features):
         t0 = time.time()
         rawbbox = image
         mask_object, mask_both, mask_neigh = label_bboxes
@@ -155,10 +153,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 projectedix += 1  #
                 coeffs = SHExpandDH(projection, sampling=2)
                 power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
-                for wavenum in range(self.fineness):
-                    result[self.projectionorder[which_proj] + "_degree_" + str(wavenum + 1).zfill(3)] = power_per_dlogl[
-                        wavenum
-                    ]
+                result[self.projectionorder[which_proj]] = power_per_dlogl[1:]
 
         t3 = time.time()
         print("time to do full unwrap and expand: ", t3 - t0)
@@ -169,7 +164,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         print("in do3d")
         results = []
         features = list(features.keys())
-        results.append(self.unwrap_and_expand(image, label_bboxes, axes))
+        results.append(self.unwrap_and_expand(image, label_bboxes, axes, features))
         return results[0]
 
     def init_selection(self, features):
@@ -179,7 +174,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 self.fineness = int(np.pi * self.scale)
             else:
                 for ix, proj in enumerate(self.projectionorder):
-                    if proj in featurename:
+                    if proj == featurename:
                         self.projections[ix] = True
         return
 
