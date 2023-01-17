@@ -211,8 +211,19 @@ class SphericalProjection(ObjectFeaturesPlugin):
     def _do_3d(self, image, binary_bbox, features, axes):
         results = []
         features = list(features.keys())
-        results.append(self.unwrap_and_expand(image, binary_bbox, axes, features))
+        results.append(self.unwrap_and_expand(image, label_bboxes, axes))
         return results[0]
+
+    def init_selection(self, features):
+        for featurename in features:
+            if "resolution" in featurename:
+                self.scale = max(self.scale, int(featurename.split(" ")[-1].split("x")[-1]))
+                self.fineness = int(np.pi * self.scale)
+            else:
+                for ix, proj in enumerate(self.projectionorder):
+                    if proj in featurename:
+                        self.projections[ix] = True
+        return
 
     def compute_local(self, image, binary_bbox, features, axes):
         for feature in features:
