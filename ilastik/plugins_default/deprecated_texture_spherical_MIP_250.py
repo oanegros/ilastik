@@ -80,18 +80,15 @@ class TextureSphericalMAX(ObjectFeaturesPlugin):
     margin = 0
     raysLUT = None
 
-    fineness = None
-    scale = 0
+    fineness = 125
+    scale = 40
 
     def availableFeatures(self, image, labels):
 
         if labels.ndim == 3:
-            names = [  # compute_local actually uses the last number to set self.scale, so be careful changing
-                "resolution 10x10x10",
-                "resolution 20x20x20",
-                "resolution 40x40x40",
-                "resolution 80x80x80",
-            ]
+            names = [
+                "degree_" + str(i + 1).zfill(3) for i in range(self.fineness)
+            ]  # TODO check if this should be a list
             tooltips = {}
             result = dict((n, {}) for n in names)
             result = self.fill_properties(result)
@@ -153,11 +150,11 @@ class TextureSphericalMAX(ObjectFeaturesPlugin):
         return results[0]
 
     def compute_local(self, image, binary_bbox, features, axes):
-        if self.fineness == None:
-            for featurename in features:
-                self.scale = max(self.scale, int(featurename.split(" ")[-1].split("x")[-1]))
-                self.fineness = int(np.pi * self.scale)
-            print(self.scale, self.fineness)
+        # if self.fineness == None:
+        #     for featurename in features:
+        #         self.scale = max(self.scale, int(featurename.split(" ")[-1].split("x")[-1]))
+        #         self.fineness = int(np.pi * self.scale)
+        #     print(self.scale, self.fineness)
         margin = ilastik.applets.objectExtraction.opObjectExtraction.max_margin({"": features})
         passed, excl = ilastik.applets.objectExtraction.opObjectExtraction.make_bboxes(binary_bbox, margin)
         return self.do_channels(
