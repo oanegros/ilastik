@@ -392,6 +392,25 @@ def lookup(img, raysLUT, fineness, projections):
     return unwrapped
 
 
+# ---- only used in generating LUT ----
+
+
+@jit(nopython=True)
+def fill_ray_table(fineness, scale, rays):
+    # needs helper functions for np.unique and np.all to jit :(
+    dummy = np.zeros((scale, scale, scale), dtype=np.int16)
+    centroid = np.array(dummy.shape, dtype=np.float32) / 2.0
+    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness * 4)
+    pirange = np.linspace(-1 * np.pi, 0 * np.pi, fineness * 2)
+
+    for phi_ix, phi in enumerate(pi2range):
+        for theta_ix, theta in enumerate(pirange):
+            ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
+            pixels = nb_unique(march(ray, centroid, dummy, marchlen=0.3), axis=0)[0]
+            rays[(phi_ix, theta_ix)] = pixels
+    return rays
+
+
 @jit(nopython=True)
 def project_(ray, values, projections):
     vals = np.zeros(np.sum(projections), dtype=np.float64)
