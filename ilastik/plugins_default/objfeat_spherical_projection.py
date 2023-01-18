@@ -188,6 +188,9 @@ class SphericalProjection(ObjectFeaturesPlugin):
         )
 
     def save_ray_table(self, rays):
+        # save a pickle of the rayLUT, requires retyping of the dictionary
+        # this is because the rays are ragged, and not single-length
+        # TODO an attempt could be made for 3d-np array of rays with -1 values after ending ray
         outLUT = {}  # need to un-type the dictionary for pickling
         for k, v in rays.items():
             outLUT[k] = v
@@ -198,6 +201,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
         return
 
     def get_ray_table(self):
+        # try to load or generate new
+        # loading requires retyping of the dictionary for numba, which slows it down
         try:
             t0 = time.time()
             name = "sphericalLUT" + str(self.scale) + ".pickle"
@@ -217,7 +222,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
             return self.generate_ray_table()
 
     def generate_ray_table(self):
-        # do all tasks outside of numba handling
+        # make new ray table = do all tasks outside of numba handling
         print("recalculating LUT")
         t0 = time.time()
         prerays = typed.Dict.empty(
@@ -239,22 +244,6 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
 
 @jit(nopython=True)
-def fill_ray_table(fineness, scale, rays):
-    # needs helper functions for np.unique and np.all to jit :(
-    dummy = np.zeros((scale, scale, scale), dtype=np.int16)
-    centroid = np.array(dummy.shape, dtype=np.float32) / 2.0
-    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness * 4)
-    pirange = np.linspace(-1 * np.pi, 0 * np.pi, fineness * 2)
-
-    for phi_ix, phi in enumerate(pi2range):
-        for theta_ix, theta in enumerate(pirange):
-            ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
-            pixels = nb_unique(march(ray, centroid, dummy, marchlen=0.3), axis=0)[0]
-            rays[(phi_ix, theta_ix)] = pixels
-    return rays
-
-
-@jit(nopython=True)
 def lookup_spherical(data_rescaled, raysLUT, fineness, projections):
     unwrapped = np.zeros((fineness * 2, fineness * 4, np.sum(projections)), dtype=np.float64)
     for k, v in raysLUT.items():
@@ -262,7 +251,7 @@ def lookup_spherical(data_rescaled, raysLUT, fineness, projections):
         for ix, voxel in enumerate(v):
             values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
             if values[ix] < 0:
-                # quit when outside of object mask - assumes convex shape
+                # quit when outside of object mask - assumes convex shape - all outside of mask are set to -1
                 break
         proj = 0
         if projections[0]:  # MAX
@@ -278,6 +267,25 @@ def lookup_spherical(data_rescaled, raysLUT, fineness, projections):
             unwrapped[k[1], k[0], proj] = np.sum(values)
             proj += 1
     return unwrapped
+
+
+# ---- only used in generating LUT ----
+
+
+@jit(nopython=True)
+def fill_ray_table(fineness, scale, rays):
+    # needs helper functions for np.unique and np.all to jit :(
+    dummy = np.zeros((scale, scale, scale), dtype=np.int16)
+    centroid = np.array(dummy.shape, dtype=np.float32) / 2.0
+    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness * 4)
+    pirange = np.linspace(-1 * np.pi, 0 * np.pi, fineness * 2)
+
+    for phi_ix, phi in enumerate(pi2range):
+        for theta_ix, theta in enumerate(pirange):
+            ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
+            pixels = nb_unique(march(ray, centroid, dummy, marchlen=0.3), axis=0)[0]
+            rays[(phi_ix, theta_ix)] = pixels
+    return rays
 
 
 @jit(nopython=True)
