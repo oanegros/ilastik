@@ -1,0 +1,9 @@
+[Core]
+Name = Spherical projection bandwidth
+Module = objfeat_spherical_projection_bandwidth
+
+[Documentation]
+Author = Oane Gros
+Version = 0.0
+Website = todo
+Description = "TODO"
