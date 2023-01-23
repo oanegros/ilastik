@@ -144,7 +144,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, self.projections)
 
         t2 = time.time()
-        print("time to lookup ray tayble: ", t2 - t1)
+        # print("time to lookup ray tayble: ", t2 - t1)
         result = {}
         projectedix = 0
         for which_proj, projected in enumerate(self.projections):
@@ -161,7 +161,6 @@ class SphericalProjection(ObjectFeaturesPlugin):
         return result
 
     def _do_3d(self, image, label_bboxes, features, axes):
-        print("in do3d")
         results = []
         features = list(features.keys())
         results.append(self.unwrap_and_expand(image, label_bboxes, axes, features))
