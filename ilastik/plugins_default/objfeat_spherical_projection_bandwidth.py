@@ -84,8 +84,6 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
     # Set in compute_local on first run:
     raysLUTdct = {}
-    fineness = None
-    scale = 0
     featdct = {}
 
     def availableFeatures(self, image, labels):
@@ -124,75 +122,70 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 features[feature]["margin"] = 0  # needs to be set to trigger compute_local
         return features
 
-    def unwrap_and_expand(self, image, label_bboxes, axes, featdct, scale):
-        t0 = time.time()
-        rawbbox = image
-        mask_object, mask_both, mask_neigh = label_bboxes
-
+    def unwrap_and_expand(self, image, label_bboxes, axes, projections, scale):
         cube = resize(image, (scale, scale, scale), preserve_range=True)
-        mask_cube = img_as_bool(resize(mask_object, (scale, scale, scale), order=0))
-        segmented_cube = np.where(np.invert(mask_cube), cube, -1)
-        # necessary to declare typed dictionary for Numba
+        mask_cube = img_as_bool(resize(label_bboxes[0], (scale, scale, scale), order=0))
+        segmented_cube = np.where(mask_cube, cube, -1)
 
-        t1 = time.time()
-        unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, self.projections)
+        unwrapped = lookup_spherical(segmented_cube, self.raysLUTdct[scale], projections)
 
-        t2 = time.time()
-        # print("time to lookup ray tayble: ", t2 - t1)
         result = {}
         projectedix = 0
-        for feature in features:
-            proj, scale = (feature.split(" ")[0], feature.split("x")[-1])
 
-        for which_proj, projected in enumerate(self.projections):
+        for which_proj, projected in enumerate(projections):
             if projected:
                 projection = unwrapped[:, :, projectedix]
-                projectedix += 1  #
+                projectedix += 1
                 coeffs = SHExpandDH(projection, sampling=2)
                 power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
-                result[self.projectionorder[which_proj]] = power_per_dlogl[1:]
-
-        t3 = time.time()
-        print("time to do full unwrap and expand: ", t3 - t0)
-        # print(result)
+                # starts from previous last degree (pi*self.resolutions[scale_ix-1]) onward
+                result[f"{self.projectionorder[which_proj]}_{scale}"] = power_per_dlogl[
+                    int(self.resolutions[self.resolutions.index(scale) - 1] * np.pi) :
+                ]
         return result
 
     def _do_3d(self, image, label_bboxes, featdct, axes):
-        results = []
-        # features = list(features.keys())
-
-        results.append(self.unwrap_and_expand(image, label_bboxes, axes, features))
-        return results[0]
-
-    # def init_selection(self, features):
-
-    #     return
+        t0 = time.time()
+        results = {}
+        for scale, projections in featdct.items():
+            results.update(self.unwrap_and_expand(image, label_bboxes, axes, projections, scale))
+        t3 = time.time()
+        print("time to do full bandwidthed unwrap and expand: ", t3 - t0)
+        return results
 
     def compute_local(self, image, binary_bbox, features, axes):
         margin = ilastik.applets.objectExtraction.opObjectExtraction.max_margin({"": features})
+        margin = ilastik.applets.objectExtraction.opObjectExtraction.max_margin({"": features})
+        margin_max = [image.shape[i] - margin[i] for i in range(len(margin))]
+        image = image[margin[0] : margin_max[0] - 1, margin[1] : margin_max[1] - 1, margin[2] : margin_max[2] - 1]
+        binary_bbox = binary_bbox[
+            margin[0] : margin_max[0] - 1, margin[1] : margin_max[1] - 1, margin[2] : margin_max[2] - 1
+        ]
         passed, excl = ilastik.applets.objectExtraction.opObjectExtraction.make_bboxes(binary_bbox, margin)
 
         # reorder features to np array by resolution to allow for efficient calculation
         featdct = {}
         for feature in features:
             proj, res = feature.split("_")
-            if res not in self.featdct:
+            res = int(res)
+            if res not in featdct:
                 featdct[res] = np.zeros(len(self.projectionorder), dtype=bool)
-                raysLUTdct[res] = self.get_ray_table(res)
+                if res not in self.raysLUTdct:
+                    self.raysLUTdct[res] = self.get_ray_table(res)
             featdct[res][self.projectionorder.index(proj)] = True
 
         return self.do_channels(
             self._do_3d, image, label_bboxes=[binary_bbox, passed, excl], featdct=featdct, axes=axes
         )
 
-    def save_ray_table(self, rays):
+    def save_ray_table(self, rays, scale):
         # save a pickle of the rayLUT, requires retyping of the dictionary
         # this is because the rays are ragged, and not single-length
         # TODO an attempt could be made for 3d-np array of rays with -1 values after ending ray
         outLUT = {}  # need to un-type the dictionary for pickling
         for k, v in rays.items():
             outLUT[k] = v
-        name = "sphericalLUT" + str(self.scale) + ".pickle"
+        name = "sphericalLUT" + str(scale) + ".pickle"
         with open(Path(__file__).parent / name, "wb") as ofs:
             pickle.dump(outLUT, ofs, protocol=pickle.HIGHEST_PROTOCOL)
         return
@@ -224,6 +217,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
             key_type=typeof((1, 1)),
             value_type=typeof(np.zeros((1, 3), dtype=np.float64)),
         )
+        print(scale)
         fill_ray_table(scale, prerays)
         # rounding instead of flooring is hard within numba, apparently.
         rays = typed.Dict.empty(
@@ -232,7 +226,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         )
         for coord, ray in prerays.items():
             rays[coord] = np.round(ray).astype(np.int16)
-        self.save_ray_table(rays)
+        self.save_ray_table(rays, scale)
         t1 = time.time()
         print("time to make ray table: ", t1 - t0)
         return rays
@@ -245,10 +239,10 @@ def lookup_spherical(data_rescaled, raysLUT, projections):
     for k, v in raysLUT.items():
         values = np.zeros(v.shape[0])
         for ix, voxel in enumerate(v):
-            values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
             if values[ix] < 0:
                 # quit when outside of object mask - assumes convex shape - all outside of mask are set to -1
                 break
+            values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
         proj = 0
         if projections[0]:  # MAX
             unwrapped[k[1], k[0], proj] = np.amax(values)
@@ -262,7 +256,7 @@ def lookup_spherical(data_rescaled, raysLUT, projections):
         if projections[3]:  # SUM
             unwrapped[k[1], k[0], proj] = np.sum(values)
             proj += 1
-    return unwrapped
+    return np.log2(unwrapped)
 
 
 # ---- only used in generating LUT ----
