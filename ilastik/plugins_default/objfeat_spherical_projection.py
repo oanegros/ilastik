@@ -35,11 +35,13 @@ import numpy as np
 # transformations and speedup
 from numba import jit, typeof, typed, types
 from skimage.transform import resize
+from skimage.filters import gaussian
 from skimage import img_as_bool
-from pyshtools.expand import SHExpandDH
+from pyshtools.expand import SHExpandDHC
 from pyshtools.spectralanalysis import spectrum
 from numba.extending import overload, register_jitable
 from numba.core.errors import TypingError
+
 
 # saving/loading LUT
 import pickle as pickle
@@ -47,6 +49,7 @@ from pathlib import Path
 
 # temp
 import time
+import matplotlib.pyplot as plt
 
 logger = logging.getLogger(__name__)
 
@@ -137,8 +140,9 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
         cube = resize(image, (self.scale, self.scale, self.scale), preserve_range=True)
         mask_cube = img_as_bool(resize(mask_object, (self.scale, self.scale, self.scale), order=0))
-        segmented_cube = np.where(np.invert(mask_cube), cube, -1)
+        segmented_cube = np.where(mask_cube, cube, -1)
         # necessary to declare typed dictionary for Numba
+        # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped/' + str(t0)+"segbig.png",  np.max(segmented_cube, axis=2))
 
         t1 = time.time()
         unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, self.projections)
@@ -151,7 +155,12 @@ class SphericalProjection(ObjectFeaturesPlugin):
             if projected:
                 projection = unwrapped[:, :, projectedix]
                 projectedix += 1  #
-                coeffs = SHExpandDH(projection, sampling=2)
+                projection = gaussian(projection, 5)
+                # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped/' + str(t0)+ self.projectionorder[which_proj]+"unwrapgauss5.png",  projection)
+
+                coeffs = SHExpandDHC(projection, sampling=2, norm=4)
+                # power_per_dlogl = spectrum(coeffs, unit="per_lm")
+                # print(power_per_dlogl.sum())
                 power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
                 result[self.projectionorder[which_proj]] = power_per_dlogl[1:]
 
@@ -181,6 +190,12 @@ class SphericalProjection(ObjectFeaturesPlugin):
         if self.fineness == None:
             self.init_selection(features)
         margin = ilastik.applets.objectExtraction.opObjectExtraction.max_margin({"": features})
+        margin_max = [image.shape[i] - margin[i] for i in range(len(margin))]
+        image = image[margin[0] : margin_max[0] - 1, margin[1] : margin_max[1] - 1, margin[2] : margin_max[2] - 1]
+        binary_bbox = binary_bbox[
+            margin[0] : margin_max[0] - 1, margin[1] : margin_max[1] - 1, margin[2] : margin_max[2] - 1
+        ]
+
         passed, excl = ilastik.applets.objectExtraction.opObjectExtraction.make_bboxes(binary_bbox, margin)
         return self.do_channels(
             self._do_3d, image, label_bboxes=[binary_bbox, passed, excl], features=features, axes=axes
@@ -207,8 +222,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
             name = "sphericalLUT" + str(self.scale) + ".pickle"
             with open(Path(__file__).parent / name, "rb") as handle:
                 newLUT = pickle.load(handle)
-            metadata = newLUT.pop("metadata")
-            assert metadata["fineness"] == self.fineness
+            # metadata = newLUT.pop("metadata")
+            # assert metadata["fineness"] == self.fineness
             typed_rays = typed.Dict.empty(
                 key_type=typeof((1, 1)),
                 value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
@@ -248,10 +263,10 @@ def lookup_spherical(data_rescaled, raysLUT, fineness, projections):
     for k, v in raysLUT.items():
         values = np.zeros(v.shape[0])
         for ix, voxel in enumerate(v):
-            values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
             if values[ix] < 0:
                 # quit when outside of object mask - assumes convex shape - all outside of mask are set to -1
                 break
+            values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
         proj = 0
         if projections[0]:  # MAX
             unwrapped[k[1], k[0], proj] = np.amax(values)
