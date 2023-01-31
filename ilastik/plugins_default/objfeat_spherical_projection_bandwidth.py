@@ -137,7 +137,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 projection = unwrapped[:, :, projectedix]
                 projectedix += 1
                 coeffs = SHExpandDH(projection, sampling=2)
-                power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
+                power_per_dlogl = np.log2(spectrum(coeffs, unit="per_dlogl"))
                 # starts from previous last degree (pi*self.resolutions[scale_ix-1]) onward
                 result[f"{self.projectionorder[which_proj]}_{scale}"] = power_per_dlogl[
                     int(self.resolutions[self.resolutions.index(scale) - 1] * np.pi) :
