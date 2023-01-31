@@ -54,29 +54,6 @@ import matplotlib.pyplot as plt
 logger = logging.getLogger(__name__)
 
 
-def cleanup_value(val, nObjects):
-    """ensure that the value is a numpy array with the correct shape."""
-
-    if type(val) == list:
-        return val
-
-    val = numpy.asarray(val)
-
-    if val.ndim == 1:
-        val = val.reshape(-1, 1)
-
-    assert val.shape[0] == nObjects
-    # remove background
-    val = val[1:]
-    return val
-
-
-def cleanup(d, nObjects, features):
-    result = dict((k, cleanup_value(v, nObjects)) for k, v in d.items())
-    newkeys = set(result.keys()) & set(features)
-    return dict((k, result[k]) for k in newkeys)
-
-
 class SphericalProjection(ObjectFeaturesPlugin):
     local_preffix = "Spherical projections "  # note the space at the end, it's important #TODO why???? - this comment was in another file
     ndim = None
@@ -161,7 +138,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 coeffs = SHExpandDHC(projection, sampling=2, norm=4)
                 # power_per_dlogl = spectrum(coeffs, unit="per_lm")
                 # print(power_per_dlogl.sum())
-                power_per_dlogl = spectrum(coeffs, unit="per_dlogl")
+                power_per_dlogl = np.log2(spectrum(coeffs, unit="per_dlogl"))
                 result[self.projectionorder[which_proj]] = power_per_dlogl[1:]
 
         t3 = time.time()
@@ -230,7 +207,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
             )
             for k, v in newLUT.items():
                 typed_rays[k] = v
-            print("loaded ray table of fineness ", metadata["fineness"], " in: ", time.time() - t0)
+            print("loaded ray table of fineness  in: ", time.time() - t0)
             return typed_rays
         except:
             return self.generate_ray_table()
