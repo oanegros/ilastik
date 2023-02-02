@@ -107,10 +107,10 @@ class SphericalProjection(ObjectFeaturesPlugin):
             features[feature]["margin"] = 0  # needs to be set to trigger compute_local
         return features
 
-    def unwrap_and_expand(self, image, label_bboxes, axes, features):
+    def unwrap_and_expand(self, image, binary_bbox, axes, features):
         t0 = time.time()
         rawbbox = image
-        mask_object, mask_both, mask_neigh = label_bboxes
+        mask_object = binary_bbox
 
         if self.raysLUT == None:
             self.raysLUT = self.get_ray_table()
@@ -132,24 +132,33 @@ class SphericalProjection(ObjectFeaturesPlugin):
             if projected:
                 projection = unwrapped[:, :, projectedix]
                 projectedix += 1  #
-                projection = gaussian(projection, 5)
+                # projection = gaussian(projection, 5)
                 # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped/' + str(t0)+ self.projectionorder[which_proj]+"unwrapgauss5.png",  projection)
 
                 coeffs = SHExpandDHC(projection, sampling=2, norm=4)
-                # power_per_dlogl = spectrum(coeffs, unit="per_lm")
-                # print(power_per_dlogl.sum())
-                power_per_dlogl = np.log2(spectrum(coeffs, unit="per_dlogl"))
-                result[self.projectionorder[which_proj]] = power_per_dlogl[1:]
+                power_per_dlogl = np.log2(spectrum(coeffs, unit="per_dlogl", base=2))
+
+                # bin in 2log spaced bins
+                bins = np.logspace(0, np.log2(len(power_per_dlogl)), num=20, base=2, endpoint=False)
+                bin_ix, current_bin, means = 0, [], []
+                for degree, power in enumerate(power_per_dlogl[1:]):
+                    current_bin.append(power)
+                    if degree + 1 >= bins[bin_ix]:
+                        if len(current_bin) > 0:
+                            means.append(np.mean(current_bin))
+                        bin_ix += 1
+                        current_bin = []
+                result[self.projectionorder[which_proj]] = means
 
         t3 = time.time()
         print("time to do full unwrap and expand: ", t3 - t0)
         # print(result)
         return result
 
-    def _do_3d(self, image, label_bboxes, features, axes):
+    def _do_3d(self, image, binary_bbox, features, axes):
         results = []
         features = list(features.keys())
-        results.append(self.unwrap_and_expand(image, label_bboxes, axes, features))
+        results.append(self.unwrap_and_expand(image, binary_bbox, axes, features))
         return results[0]
 
     def init_selection(self, features):
@@ -166,17 +175,13 @@ class SphericalProjection(ObjectFeaturesPlugin):
     def compute_local(self, image, binary_bbox, features, axes):
         if self.fineness == None:
             self.init_selection(features)
-        margin = ilastik.applets.objectExtraction.opObjectExtraction.max_margin({"": features})
-        margin_max = [image.shape[i] - margin[i] for i in range(len(margin))]
-        image = image[margin[0] : margin_max[0] - 1, margin[1] : margin_max[1] - 1, margin[2] : margin_max[2] - 1]
-        binary_bbox = binary_bbox[
-            margin[0] : margin_max[0] - 1, margin[1] : margin_max[1] - 1, margin[2] : margin_max[2] - 1
-        ]
+        orig_bbox = binary_bbox
+        margin = [(np.min(dim), np.max(dim) + 1) for dim in np.nonzero(binary_bbox)]
+        image = image[margin[0][0] : margin[0][1], margin[1][0] : margin[1][1], margin[2][0] : margin[2][1]]
+        binary_bbox = binary_bbox[margin[0][0] : margin[0][1], margin[1][0] : margin[1][1], margin[2][0] : margin[2][1]]
 
-        passed, excl = ilastik.applets.objectExtraction.opObjectExtraction.make_bboxes(binary_bbox, margin)
-        return self.do_channels(
-            self._do_3d, image, label_bboxes=[binary_bbox, passed, excl], features=features, axes=axes
-        )
+        assert np.sum(orig_bbox) - np.sum(binary_bbox) == 0
+        return self.do_channels(self._do_3d, image, binary_bbox=binary_bbox, features=features, axes=axes)
 
     def save_ray_table(self, rays):
         # save a pickle of the rayLUT, requires retyping of the dictionary
@@ -185,7 +190,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         outLUT = {}  # need to un-type the dictionary for pickling
         for k, v in rays.items():
             outLUT[k] = v
-        outLUT["metadata"] = {"fineness": self.fineness}  # add more if distinguishing settings are made
+        # outLUT["metadata"] = {"fineness": self.fineness}  # add more if distinguishing settings are made
         name = "sphericalLUT" + str(self.scale) + ".pickle"
         with open(Path(__file__).parent / name, "wb") as ofs:
             pickle.dump(outLUT, ofs, protocol=pickle.HIGHEST_PROTOCOL)
@@ -209,7 +214,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 typed_rays[k] = v
             print("loaded ray table of fineness  in: ", time.time() - t0)
             return typed_rays
-        except:
+        except Exception as e:
             return self.generate_ray_table()
 
     def generate_ray_table(self):
