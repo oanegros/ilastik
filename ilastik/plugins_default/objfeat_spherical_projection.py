@@ -139,7 +139,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 power_per_dlogl = np.log2(spectrum(coeffs, unit="per_dlogl", base=2))
 
                 # bin in 2log spaced bins
-                bins = np.logspace(0, np.log2(len(power_per_dlogl)), num=20, base=2, endpoint=False)
+                bins = np.logspace(0, np.log2(len(power_per_dlogl)), num=20, base=2, endpoint=True)
                 bin_ix, current_bin, means = 0, [], []
                 for degree, power in enumerate(power_per_dlogl[1:]):
                     current_bin.append(power)
