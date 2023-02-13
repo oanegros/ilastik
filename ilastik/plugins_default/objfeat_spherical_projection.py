@@ -144,7 +144,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 for degree, power in enumerate(power_per_dlogl[1:]):
                     current_bin.append(power)
                     if degree + 1 >= bins[bin_ix]:
-                        if len(current_bin) > 0:
+                        if len(current_bin) > 0:  # this is for high bins/indices
                             means.append(np.mean(current_bin))
                         bin_ix += 1
                         current_bin = []
