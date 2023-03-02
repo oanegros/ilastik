@@ -55,16 +55,19 @@ logger = logging.getLogger(__name__)
 
 
 class SphericalProjection(ObjectFeaturesPlugin):
-    local_preffix = "Spherical projections "  # note the space at the end, it's important #TODO why???? - this comment was in another file
     ndim = None
-    margin = 0
-    projectionorder = ["MAX projection", "MIN projection", "SUM projection", "MEAN projection"]  # nee
+    margin = 0  # necessary for calling compute_local
+
+    # projection order is
+    projectionorder = ["MAX projection", "MIN projection", "SUM projection", "MEAN projection"]
+    # It might be more maintainable to have this as a list of tuples with the axis in there, but you would probably need to do string comparison instead of boolean checks in the lookup
+    # projections = [("MAX projection",-1), ("MIN projection",-1), ("Length",-1), ("MEAN projection",-1)]
+    projections = np.zeros(len(projectionorder), dtype=bool)  # contains selection of which projections should be done
 
     # Set in compute_local on first run:
     raysLUT = None
     fineness = None
     scale = 0
-    projections = np.zeros(4, dtype=bool)
 
     def availableFeatures(self, image, labels):
 
@@ -81,7 +84,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
             result = dict((n, {}) for n in names)
             result = self.fill_properties(result)
             for f, v in result.items():
-                v["tooltip"] = self.local_preffix + f
+                v["tooltip"] = "Spherical projections " + f
         else:
             result = {}
 
@@ -186,11 +189,10 @@ class SphericalProjection(ObjectFeaturesPlugin):
     def save_ray_table(self, rays):
         # save a pickle of the rayLUT, requires retyping of the dictionary
         # this is because the rays are ragged, and not single-length
-        # TODO an attempt could be made for 3d-np array of rays with -1 values after ending ray
+        # TODO an attempt could be made for 3d-np array of rays with -1 values after ending ray, but this will add checks
         outLUT = {}  # need to un-type the dictionary for pickling
         for k, v in rays.items():
             outLUT[k] = v
-        # outLUT["metadata"] = {"fineness": self.fineness}  # add more if distinguishing settings are made
         name = "sphericalLUT" + str(self.scale) + ".pickle"
         with open(Path(__file__).parent / name, "wb") as ofs:
             pickle.dump(outLUT, ofs, protocol=pickle.HIGHEST_PROTOCOL)
@@ -204,8 +206,6 @@ class SphericalProjection(ObjectFeaturesPlugin):
             name = "sphericalLUT" + str(self.scale) + ".pickle"
             with open(Path(__file__).parent / name, "rb") as handle:
                 newLUT = pickle.load(handle)
-            # metadata = newLUT.pop("metadata")
-            # assert metadata["fineness"] == self.fineness
             typed_rays = typed.Dict.empty(
                 key_type=typeof((1, 1)),
                 value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
@@ -218,25 +218,21 @@ class SphericalProjection(ObjectFeaturesPlugin):
             return self.generate_ray_table()
 
     def generate_ray_table(self):
-        # make new ray table = do all tasks outside of numba handling
+        # make new ray table; here do all tasks outside of numba handling (end of file)
         print("recalculating LUT")
         t0 = time.time()
-        prerays = typed.Dict.empty(
-            key_type=typeof((1, 1)),
-            value_type=typeof(np.zeros((1, 3), dtype=np.float64)),
-        )
-        fill_ray_table(self.fineness, self.scale, prerays)
-        # rounding instead of flooring is hard within numba, apparently.
         rays = typed.Dict.empty(
             key_type=typeof((1, 1)),
             value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
         )
-        for coord, ray in prerays.items():
-            rays[coord] = np.round(ray).astype(np.int16)
+        fill_ray_table(self.fineness, self.scale, rays)
         self.save_ray_table(rays)
         t1 = time.time()
         print("time to make ray table: ", t1 - t0)
         return rays
+
+
+# All numba-accelerated functions cannot receive self, so are not class functions
 
 
 @jit(nopython=True)
@@ -280,7 +276,7 @@ def fill_ray_table(fineness, scale, rays):
         for theta_ix, theta in enumerate(pirange):
             ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
             pixels = nb_unique(march(ray, centroid, dummy, marchlen=0.3), axis=0)[0]
-            rays[(phi_ix, theta_ix)] = pixels
+            rays[(phi_ix, theta_ix)] = (np.floor(pixels)).astype(np.int16)
     return rays
 
 
