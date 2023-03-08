@@ -18,7 +18,12 @@
 # on the ilastik web site at:
 # 		   http://ilastik.org/license.html
 
-# Plugin written by Oane Gros WIP
+# Plugin written by Oane Gros.
+# Does feature extraction by spherical projection texture
+# Does a user-settable projection along rays from the centroid in gauss-legendre quadrature
+# Mapping the data to a 2D sphericall surface
+# This is decomposed into a spherical harmonics power spectrum
+# The resulting feature is an undersampled (for feature reduction) spectrum
 ###############################################################################
 
 # core ilastik
@@ -37,7 +42,9 @@ from numba import jit, typeof, typed, types
 from skimage.transform import resize
 from skimage.filters import gaussian
 from skimage import img_as_bool
-from pyshtools.expand import SHExpandDHC
+import pyshtools as pysh
+from pyshtools.shtools import GLQGridCoord
+from pyshtools.expand import SHExpandGLQ
 from pyshtools.spectralanalysis import spectrum
 from numba.extending import overload, register_jitable
 from numba.core.errors import TypingError
@@ -133,25 +140,53 @@ class SphericalProjection(ObjectFeaturesPlugin):
         projectedix = 0
         for which_proj, projected in enumerate(self.projections):
             if projected:
-                projection = unwrapped[:, :, projectedix]
+                projection = unwrapped[:, :, projectedix].astype(float)
+                print(projection.shape, "after projection")
                 projectedix += 1  #
+                # projection = (((projection - projection.min()) / (projection.max() - projection.min()))*np.iinfo(np.int64).max).astype(np.int64)
+                # print(projection)
                 # projection = gaussian(projection, 5)
-                # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped/' + str(t0)+ self.projectionorder[which_proj]+"unwrapgauss5.png",  projection)
+                plt.imsave(
+                    "/Users/oanegros/Documents/screenshots/tmp_unwrapped/"
+                    + str(t0)
+                    + self.projectionorder[which_proj]
+                    + "unwrapDH1.png",
+                    projection,
+                )
+                # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped/'+ str(t0) + "_" + str(np.count_nonzero(mask_object))+ self.projectionorder[which_proj]+"unwrapGLQ.png",  projection)
+                # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped/'+ str(t0) + "_" + str(np.count_nonzero(mask_object))+ self.projectionorder[which_proj]+"unwrapGLQ.png",  projection)
+                # coeffs = pysh.expand.SHExpandDHC(projection, sampling=1)
+                # np.save('/Users/oanegros/Documents/screenshots/tmp_unwrapped/'+ str(t0) + "s_" + str(np.count_nonzero(mask_object))+ self.projectionorder[which_proj]+"unwrapDH1.npy", projection)
+                zero, w = pysh.expand.SHGLQ(self.fineness)
+                coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
+                # grid = pysh.expand.MakeGridGLQ(coeffs, zero)
+                # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped/' + str(t0)+ self.projectionorder[which_proj]+"unwrapGLQ_regen.png",  projection)
 
-                coeffs = SHExpandDHC(projection, sampling=2, norm=4)
-                power_per_dlogl = np.log2(spectrum(coeffs, unit="per_dlogl", base=2))
+                power_per_dlogl = spectrum(coeffs, unit="per_dlogl", base=2)
+                f, ax = plt.subplots(figsize=(9, 4))
+                plt.plot(np.arange(0, len(power_per_dlogl)), power_per_dlogl)
+                plt.yscale("log", base=2)
+                plt.xscale("log", base=2)
+                plt.savefig(
+                    "/Users/oanegros/Documents/screenshots/tmp_unwrapped/"
+                    + str(t0)
+                    + self.projectionorder[which_proj]
+                    + "unwrapDH1_spectrum.png"
+                )
+                # print(len(power_per_dlogl))
 
-                # bin in 2log spaced bins
-                bins = np.logspace(0, np.log2(len(power_per_dlogl)), num=20, base=2, endpoint=True)
-                bin_ix, current_bin, means = 0, [], []
-                for degree, power in enumerate(power_per_dlogl[1:]):
-                    current_bin.append(power)
-                    if degree + 1 >= bins[bin_ix]:
-                        if len(current_bin) > 0:  # this is for high bins/indices
-                            means.append(np.mean(current_bin))
-                        bin_ix += 1
-                        current_bin = []
-                result[self.projectionorder[which_proj]] = means
+                # # bin in 2log spaced bins
+                # bins = np.logspace(0, np.log2(len(power_per_dlogl)), num=20, base=2, endpoint=True)
+                # bin_ix, current_bin, means = 0, [], []
+                # for degree, power in enumerate(power_per_dlogl[1:]):
+                #     current_bin.append(power)
+                #     if degree + 1 >= bins[bin_ix]:
+                #         if len(current_bin) > 0:  # this is for high bins/indices
+                #             means.append(np.mean(current_bin))
+                #         bin_ix += 1
+                #         current_bin = []
+                # result[self.projectionorder[which_proj]] = means
+                result[self.projectionorder[which_proj]] = power_per_dlogl
 
         t3 = time.time()
         print("time to do full unwrap and expand: ", t3 - t0)
@@ -221,11 +256,18 @@ class SphericalProjection(ObjectFeaturesPlugin):
         # make new ray table; here do all tasks outside of numba handling (end of file)
         print("recalculating LUT")
         t0 = time.time()
+        # prerays = typed.Dict.empty(
+        #     key_type=typeof((1, 1)),
+        #     value_type=typeof(np.zeros((2, 3), dtype=np.float64)),
+        # )
         rays = typed.Dict.empty(
             key_type=typeof((1, 1)),
             value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
         )
         fill_ray_table(self.fineness, self.scale, rays)
+        # for coord, ray in prerays.items():
+        #     # print(np.unique(np.round(ray).astype(np.int16),axis=0))
+        #     rays[coord] = np.unique(np.floor(ray).astype(np.int16),axis=0)
         self.save_ray_table(rays)
         t1 = time.time()
         print("time to make ray table: ", t1 - t0)
@@ -237,8 +279,16 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
 @jit(nopython=True)
 def lookup_spherical(data_rescaled, raysLUT, fineness, projections):
-    unwrapped = np.zeros((fineness * 2, fineness * 4, np.sum(projections)), dtype=np.float64)
+    shape = raysLUT[(-1, -1)]
+    print(shape)
+    y, x = shape[0][0], shape[0][1]
+    print(x, y)
+    unwrapped = np.zeros((x, y, np.sum(projections)), dtype=np.float64)
+
+    # unwrapped = np.zeros((fineness , fineness * 2, np.sum(projections)), dtype=np.float64)
     for k, v in raysLUT.items():
+        if k == (-1, -1):
+            continue
         values = np.zeros(v.shape[0])
         for ix, voxel in enumerate(v):
             if values[ix] < 0:
@@ -264,19 +314,43 @@ def lookup_spherical(data_rescaled, raysLUT, fineness, projections):
 # ---- only used in generating LUT ----
 
 
-@jit(nopython=True)
+# @jit(nopython=True)
 def fill_ray_table(fineness, scale, rays):
     # needs helper functions for np.unique and np.all to jit :(
+    # TODO remove dummy ; remove fineness!!
     dummy = np.zeros((scale, scale, scale), dtype=np.int16)
     centroid = np.array(dummy.shape, dtype=np.float32) / 2.0
-    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness * 4)
+    print(fineness)
+    glq_degrees = GLQGridCoord(fineness)
+    print(glq_degrees)
+    glq_lat, glq_lon = np.deg2rad(glq_degrees[0]), np.deg2rad(glq_degrees[1])
+    print(len(glq_lat), len(glq_lon))
+    # print(glq_lat)
+    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness * 2)
     pirange = np.linspace(-1 * np.pi, 0 * np.pi, fineness * 2)
-
-    for phi_ix, phi in enumerate(pi2range):
-        for theta_ix, theta in enumerate(pirange):
-            ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
-            pixels = nb_unique(march(ray, centroid, dummy, marchlen=0.3), axis=0)[0]
-            rays[(phi_ix, theta_ix)] = (np.floor(pixels)).astype(np.int16)
+    x_len, y_len = len(glq_lon), len(glq_lat)
+    # print(np.unique(glq_degrees[0].astype(int)), np.unique(glq_degrees[1].astype(int)))
+    for phi_ix, lon in enumerate(glq_lon):
+        for theta_ix, lat in enumerate(glq_lat):
+            # for phi_ix, phi in enumerate(pi2range):
+            #     for theta_ix, theta in enumerate(pirange):
+            ray = np.array(
+                [
+                    np.sin((np.pi / 2) - lat) * np.cos(lon),
+                    np.sin((np.pi / 2) - lat) * np.sin(lon),
+                    np.cos((np.pi / 2) - lat),
+                ]
+            )
+            # ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
+            pixels = march(ray, centroid, dummy, marchlen=0.3).astype(np.int16)
+            # print(pixels, type(pixels))
+            rays[(phi_ix, theta_ix)] = pixels.copy()  # this might have to do with array layout?
+            # rays[(phi_ix, theta_ix)] = nb_unique((np.floor(pixels[1:])).astype(np.int16), axis=0)[0]
+            # print(rays[(phi_ix, theta_ix)])
+    # save shape of array in indexes -1, -1
+    rays[(-1, -1)] = np.array([[len(glq_lon), len(glq_lat), 0]]).astype(np.int16)
+    #         print(np.rad2deg([phi, theta]))
+    # print("\n\n-----\n\n")
     return rays
 
 
@@ -313,130 +387,3 @@ def isect_dist_line_plane(centroid, raydir, planepoint, planenormal, epsilon=1e-
         if fac > 0:
             return fac
     return np.inf
-
-
-# ----  numba helper functions ----
-# taken from https://github.com/numba/numba/issues/7663, by https://github.com/rishi-kulkarni
-
-
-@jit(nopython=True)
-def nb_unique(input_data, axis=0):
-    """2D np.unique(a, return_index=True, return_counts=True)
-
-    Parameters
-    ----------
-    input_data : 2D numeric array
-    axis : int, optional
-        axis along which to identify unique slices, by default 0
-    Returns
-    -------
-    2D array
-        unique rows (or columns) from the input array
-    1D array of ints
-        indices of unique rows (or columns) in input array
-    1D array of ints
-        number of instances of each unique row
-    """
-
-    # don't want to sort original data
-    if axis == 1:
-        data = input_data.T.copy()
-
-    else:
-        data = input_data.copy()
-
-    # so we can remember the original indexes of each row
-    orig_idx = np.array([i for i in range(data.shape[0])])
-
-    # sort our data AND the original indexes
-    for i in range(data.shape[1] - 1, -1, -1):
-        sorter = data[:, i].argsort(kind="mergesort")
-
-        # mergesort to keep associations
-        data = data[sorter]
-        orig_idx = orig_idx[sorter]
-    # get original indexes
-    idx = [0]
-
-    if data.shape[1] > 1:
-        bool_idx = ~np.all((data[:-1] == data[1:]), axis=1)
-        additional_uniques = np.nonzero(bool_idx)[0] + 1
-
-    else:
-        additional_uniques = np.nonzero(~(data[:-1] == data[1:]))[0] + 1
-
-    idx = np.append(idx, additional_uniques)
-    # get counts for each unique row
-    counts = np.append(idx[1:], data.shape[0])
-    counts = counts - idx
-    return data[idx], orig_idx[idx], counts
-
-
-@overload(np.all)
-def np_all(x, axis=None):
-
-    # ndarray.all with axis arguments for 2D arrays.
-
-    @register_jitable
-    def _np_all_axis0(arr):
-        out = np.logical_and(arr[0], arr[1])
-        for v in iter(arr[2:]):
-            for idx, v_2 in enumerate(v):
-                out[idx] = np.logical_and(v_2, out[idx])
-        return out
-
-    @register_jitable
-    def _np_all_flat(x):
-        out = x.all()
-        return out
-
-    @register_jitable
-    def _np_all_axis1(arr):
-        out = np.logical_and(arr[:, 0], arr[:, 1])
-        for idx, v in enumerate(arr[:, 2:]):
-            for v_2 in iter(v):
-                out[idx] = np.logical_and(v_2, out[idx])
-        return out
-
-    if isinstance(axis, types.Optional):
-        axis = axis.type
-
-    if not isinstance(axis, (types.Integer, types.NoneType)):
-        raise TypingError("'axis' must be 0, 1, or None")
-
-    if not isinstance(x, types.Array):
-        raise TypingError("Only accepts NumPy ndarray")
-
-    if not (1 <= x.ndim <= 2):
-        raise TypingError("Only supports 1D or 2D NumPy ndarrays")
-
-    if isinstance(axis, types.NoneType):
-
-        def _np_all_impl(x, axis=None):
-            return _np_all_flat(x)
-
-        return _np_all_impl
-
-    elif x.ndim == 1:
-
-        def _np_all_impl(x, axis=None):
-            return _np_all_flat(x)
-
-        return _np_all_impl
-
-    elif x.ndim == 2:
-
-        def _np_all_impl(x, axis=None):
-            if axis == 0:
-                return _np_all_axis0(x)
-            else:
-                return _np_all_axis1(x)
-
-        return _np_all_impl
-
-    else:
-
-        def _np_all_impl(x, axis=None):
-            return _np_all_flat(x)
-
-        return _np_all_impl
