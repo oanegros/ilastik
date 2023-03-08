@@ -33,7 +33,6 @@ import ilastik.applets.objectExtraction.opObjectExtraction
 
 # core
 import vigra
-import numpy
 import logging
 import numpy as np
 
@@ -46,8 +45,6 @@ import pyshtools as pysh
 from pyshtools.shtools import GLQGridCoord
 from pyshtools.expand import SHExpandGLQ
 from pyshtools.spectralanalysis import spectrum
-from numba.extending import overload, register_jitable
-from numba.core.errors import TypingError
 
 
 # saving/loading LUT
@@ -128,9 +125,6 @@ class SphericalProjection(ObjectFeaturesPlugin):
         cube = resize(image, (self.scale, self.scale, self.scale), preserve_range=True)
         mask_cube = img_as_bool(resize(mask_object, (self.scale, self.scale, self.scale), order=0))
         segmented_cube = np.where(mask_cube, cube, -1)
-        # necessary to declare typed dictionary for Numba
-        # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped/' + str(t0)+"segbig.png",  np.max(segmented_cube, axis=2))
-
         t1 = time.time()
         unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, self.projections)
 
@@ -141,52 +135,23 @@ class SphericalProjection(ObjectFeaturesPlugin):
         for which_proj, projected in enumerate(self.projections):
             if projected:
                 projection = unwrapped[:, :, projectedix].astype(float)
-                print(projection.shape, "after projection")
                 projectedix += 1  #
-                # projection = (((projection - projection.min()) / (projection.max() - projection.min()))*np.iinfo(np.int64).max).astype(np.int64)
-                # print(projection)
-                # projection = gaussian(projection, 5)
-                plt.imsave(
-                    "/Users/oanegros/Documents/screenshots/tmp_unwrapped/"
-                    + str(t0)
-                    + self.projectionorder[which_proj]
-                    + "unwrapDH1.png",
-                    projection,
-                )
-                # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped/'+ str(t0) + "_" + str(np.count_nonzero(mask_object))+ self.projectionorder[which_proj]+"unwrapGLQ.png",  projection)
-                # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped/'+ str(t0) + "_" + str(np.count_nonzero(mask_object))+ self.projectionorder[which_proj]+"unwrapGLQ.png",  projection)
-                # coeffs = pysh.expand.SHExpandDHC(projection, sampling=1)
-                # np.save('/Users/oanegros/Documents/screenshots/tmp_unwrapped/'+ str(t0) + "s_" + str(np.count_nonzero(mask_object))+ self.projectionorder[which_proj]+"unwrapDH1.npy", projection)
                 zero, w = pysh.expand.SHGLQ(self.fineness)
                 coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
-                # grid = pysh.expand.MakeGridGLQ(coeffs, zero)
-                # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped/' + str(t0)+ self.projectionorder[which_proj]+"unwrapGLQ_regen.png",  projection)
-
                 power_per_dlogl = spectrum(coeffs, unit="per_dlogl", base=2)
-                f, ax = plt.subplots(figsize=(9, 4))
-                plt.plot(np.arange(0, len(power_per_dlogl)), power_per_dlogl)
-                plt.yscale("log", base=2)
-                plt.xscale("log", base=2)
-                plt.savefig(
-                    "/Users/oanegros/Documents/screenshots/tmp_unwrapped/"
-                    + str(t0)
-                    + self.projectionorder[which_proj]
-                    + "unwrapDH1_spectrum.png"
-                )
-                # print(len(power_per_dlogl))
 
-                # # bin in 2log spaced bins
-                # bins = np.logspace(0, np.log2(len(power_per_dlogl)), num=20, base=2, endpoint=True)
-                # bin_ix, current_bin, means = 0, [], []
-                # for degree, power in enumerate(power_per_dlogl[1:]):
-                #     current_bin.append(power)
-                #     if degree + 1 >= bins[bin_ix]:
-                #         if len(current_bin) > 0:  # this is for high bins/indices
-                #             means.append(np.mean(current_bin))
-                #         bin_ix += 1
-                #         current_bin = []
-                # result[self.projectionorder[which_proj]] = means
-                result[self.projectionorder[which_proj]] = power_per_dlogl
+                # bin in 2log spaced bins
+                bins = np.logspace(0, np.log2(len(power_per_dlogl)), num=20, base=2, endpoint=True)
+                bin_ix, current_bin, means = 0, [], []
+                for degree, power in enumerate(power_per_dlogl[1:]):
+                    current_bin.append(power)
+                    if degree + 1 >= bins[bin_ix]:
+                        if len(current_bin) > 0:  # this is for high bins/indices
+                            means.append(np.mean(current_bin))
+                        bin_ix += 1
+                        current_bin = []
+                result[self.projectionorder[which_proj]] = means
+                # result[self.projectionorder[which_proj]] = power_per_dlogl
 
         t3 = time.time()
         print("time to do full unwrap and expand: ", t3 - t0)
@@ -224,7 +189,6 @@ class SphericalProjection(ObjectFeaturesPlugin):
     def save_ray_table(self, rays):
         # save a pickle of the rayLUT, requires retyping of the dictionary
         # this is because the rays are ragged, and not single-length
-        # TODO an attempt could be made for 3d-np array of rays with -1 values after ending ray, but this will add checks
         outLUT = {}  # need to un-type the dictionary for pickling
         for k, v in rays.items():
             outLUT[k] = v
@@ -256,18 +220,13 @@ class SphericalProjection(ObjectFeaturesPlugin):
         # make new ray table; here do all tasks outside of numba handling (end of file)
         print("recalculating LUT")
         t0 = time.time()
-        # prerays = typed.Dict.empty(
-        #     key_type=typeof((1, 1)),
-        #     value_type=typeof(np.zeros((2, 3), dtype=np.float64)),
-        # )
         rays = typed.Dict.empty(
             key_type=typeof((1, 1)),
             value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
         )
         fill_ray_table(self.fineness, self.scale, rays)
-        # for coord, ray in prerays.items():
-        #     # print(np.unique(np.round(ray).astype(np.int16),axis=0))
-        #     rays[coord] = np.unique(np.floor(ray).astype(np.int16),axis=0)
+        for ix, ray in rays.items():
+            rays[ix] = np.unique(ray, axis=0)
         self.save_ray_table(rays)
         t1 = time.time()
         print("time to make ray table: ", t1 - t0)
@@ -280,9 +239,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
 @jit(nopython=True)
 def lookup_spherical(data_rescaled, raysLUT, fineness, projections):
     shape = raysLUT[(-1, -1)]
-    print(shape)
     y, x = shape[0][0], shape[0][1]
-    print(x, y)
     unwrapped = np.zeros((x, y, np.sum(projections)), dtype=np.float64)
 
     # unwrapped = np.zeros((fineness , fineness * 2, np.sum(projections)), dtype=np.float64)
@@ -320,20 +277,15 @@ def fill_ray_table(fineness, scale, rays):
     # TODO remove dummy ; remove fineness!!
     dummy = np.zeros((scale, scale, scale), dtype=np.int16)
     centroid = np.array(dummy.shape, dtype=np.float32) / 2.0
-    print(fineness)
+
     glq_degrees = GLQGridCoord(fineness)
-    print(glq_degrees)
     glq_lat, glq_lon = np.deg2rad(glq_degrees[0]), np.deg2rad(glq_degrees[1])
-    print(len(glq_lat), len(glq_lon))
-    # print(glq_lat)
-    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness * 2)
-    pirange = np.linspace(-1 * np.pi, 0 * np.pi, fineness * 2)
-    x_len, y_len = len(glq_lon), len(glq_lat)
-    # print(np.unique(glq_degrees[0].astype(int)), np.unique(glq_degrees[1].astype(int)))
+
+    # For DH2 sampling
+    # pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness * 2)
+    # pirange = np.linspace(-1 * np.pi, 0 * np.pi, fineness * 2)
     for phi_ix, lon in enumerate(glq_lon):
         for theta_ix, lat in enumerate(glq_lat):
-            # for phi_ix, phi in enumerate(pi2range):
-            #     for theta_ix, theta in enumerate(pirange):
             ray = np.array(
                 [
                     np.sin((np.pi / 2) - lat) * np.cos(lon),
@@ -341,16 +293,12 @@ def fill_ray_table(fineness, scale, rays):
                     np.cos((np.pi / 2) - lat),
                 ]
             )
+            # DH2 legacy:
             # ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
             pixels = march(ray, centroid, dummy, marchlen=0.3).astype(np.int16)
-            # print(pixels, type(pixels))
-            rays[(phi_ix, theta_ix)] = pixels.copy()  # this might have to do with array layout?
-            # rays[(phi_ix, theta_ix)] = nb_unique((np.floor(pixels[1:])).astype(np.int16), axis=0)[0]
-            # print(rays[(phi_ix, theta_ix)])
+            rays[(phi_ix, theta_ix)] = pixels.copy()
     # save shape of array in indexes -1, -1
     rays[(-1, -1)] = np.array([[len(glq_lon), len(glq_lat), 0]]).astype(np.int16)
-    #         print(np.rad2deg([phi, theta]))
-    # print("\n\n-----\n\n")
     return rays
 
 
