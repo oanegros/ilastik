@@ -63,9 +63,10 @@ class SphericalProjection(ObjectFeaturesPlugin):
     margin = 0  # necessary for calling compute_local
 
     # projection order is
-    projectionorder = ["MAX projection", "MIN projection", "SUM projection", "MEAN projection"]
+    projectionorder = ["MAX projection", "MIN projection", "SHAPE projection", "MEAN projection"]
     # It might be more maintainable to have this as a list of tuples with the axis in there, but you would probably need to do string comparison instead of boolean checks in the lookup
     # projections = [("MAX projection",-1), ("MIN projection",-1), ("Length",-1), ("MEAN projection",-1)]
+    # or best would be a dictionary of featname : func, but this might give numba-issues
     projections = np.zeros(len(projectionorder), dtype=bool)  # contains selection of which projections should be done
 
     # Set in compute_local on first run:
@@ -81,6 +82,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 "resolution 20x20x20",
                 "resolution 40x40x40",
                 "resolution 80x80x80",
+                # "resolution 160x160x160",
             ]
             for proj in self.projectionorder:
                 names.append(proj)
@@ -115,6 +117,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         return features
 
     def unwrap_and_expand(self, image, binary_bbox, axes, features):
+
         t0 = time.time()
         rawbbox = image
         mask_object = binary_bbox
@@ -123,22 +126,24 @@ class SphericalProjection(ObjectFeaturesPlugin):
             self.raysLUT = self.get_ray_table()
 
         cube = resize(image, (self.scale, self.scale, self.scale), preserve_range=True)
-        mask_cube = img_as_bool(resize(mask_object, (self.scale, self.scale, self.scale), order=0))
+        mask_cube = resize(img_as_bool(mask_object), (self.scale, self.scale, self.scale), order=0)
         segmented_cube = np.where(mask_cube, cube, -1)
         t1 = time.time()
         unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, self.projections)
 
         t2 = time.time()
-        # print("time to lookup ray tayble: ", t2 - t1)
+
         result = {}
         projectedix = 0
         for which_proj, projected in enumerate(self.projections):
             if projected:
                 projection = unwrapped[:, :, projectedix].astype(float)
+                # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped2/'+ str(t0) + "_" + str(np.count_nonzero(mask_object))+ "_" + str(np.count_nonzero(mask_object==0))+self.projectionorder[which_proj]+"unwrapGLQ_masked.png",  projection)
                 projectedix += 1  #
                 zero, w = pysh.expand.SHGLQ(self.fineness)
                 coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
                 power_per_dlogl = spectrum(coeffs, unit="per_dlogl", base=2)
+                # print(time.time()-t4)
 
                 # bin in 2log spaced bins
                 bins = np.logspace(0, np.log2(len(power_per_dlogl)), num=20, base=2, endpoint=True)
@@ -150,12 +155,11 @@ class SphericalProjection(ObjectFeaturesPlugin):
                             means.append(np.mean(current_bin))
                         bin_ix += 1
                         current_bin = []
-                result[self.projectionorder[which_proj]] = means
-                # result[self.projectionorder[which_proj]] = power_per_dlogl
+                result[self.projectionorder[which_proj]] = np.log2(means)
+                # result[self.projectionorder[which_proj]] = np.log2(power_per_dlogl)
 
         t3 = time.time()
-        print("time to do full unwrap and expand: ", t3 - t0)
-        # print(result)
+        print("time to do full unwrap and expand: \t", t3 - t0)
         return result
 
     def _do_3d(self, image, binary_bbox, features, axes):
@@ -178,6 +182,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
     def compute_local(self, image, binary_bbox, features, axes):
         if self.fineness == None:
             self.init_selection(features)
+        # print(binary_bbox.shape)
         orig_bbox = binary_bbox
         margin = [(np.min(dim), np.max(dim) + 1) for dim in np.nonzero(binary_bbox)]
         image = image[margin[0][0] : margin[0][1], margin[1][0] : margin[1][1], margin[2][0] : margin[2][1]]
@@ -211,7 +216,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
             )
             for k, v in newLUT.items():
                 typed_rays[k] = v
-            print("loaded ray table of fineness  in: ", time.time() - t0)
+            print("loaded ray table in: ", time.time() - t0)
             return typed_rays
         except Exception as e:
             return self.generate_ray_table()
@@ -224,9 +229,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
             key_type=typeof((1, 1)),
             value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
         )
-        fill_ray_table(self.fineness, self.scale, rays)
-        for ix, ray in rays.items():
-            rays[ix] = np.unique(ray, axis=0)
+        fill_ray_table(self.scale, GLQGridCoord(self.fineness), rays)
         self.save_ray_table(rays)
         t1 = time.time()
         print("time to make ray table: ", t1 - t0)
@@ -237,33 +240,32 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
 
 @jit(nopython=True)
-def lookup_spherical(data_rescaled, raysLUT, fineness, projections):
-    shape = raysLUT[(-1, -1)]
-    y, x = shape[0][0], shape[0][1]
-    unwrapped = np.zeros((x, y, np.sum(projections)), dtype=np.float64)
+def lookup_spherical(img, raysLUT, fineness, projections):
+    unwrapped = np.zeros((fineness + 1, fineness * 2 + 1, np.sum(projections)), dtype=np.float64)
+    for loc, ray in raysLUT.items():
+        # TODO update indexing to "values = img[ray[:,0],ray[:,1],ray[:,2]]" or similar once numba multiple advanced indexing is merged https://github.com/numba/numba/pull/8491
+        values = np.zeros(ray.shape[0])
+        for ix, voxel in enumerate(ray):
+            values[ix] = img[voxel[0], voxel[1], voxel[2]]
 
-    # unwrapped = np.zeros((fineness , fineness * 2, np.sum(projections)), dtype=np.float64)
-    for k, v in raysLUT.items():
-        if k == (-1, -1):
-            continue
-        values = np.zeros(v.shape[0])
-        for ix, voxel in enumerate(v):
             if values[ix] < 0:
-                # quit when outside of object mask - assumes convex shape - all outside of mask are set to -1
-                break
-            values[ix] = data_rescaled[voxel[0], voxel[1], voxel[2]]
+                # quit when outside of object mask -  all outside of mask are set to -1
+                if ix != 0:  # centroid is not outside of mask
+                    values = values[:ix]
+                    break
         proj = 0
+        ray = ray.astype(np.float64)
         if projections[0]:  # MAX
-            unwrapped[k[1], k[0], proj] = np.amax(values)
+            unwrapped[loc[1], loc[0], proj] = np.amax(values)
             proj += 1
         if projections[1]:  # MIN
-            unwrapped[k[1], k[0], proj] = np.amin(values)
+            unwrapped[loc[1], loc[0], proj] = np.amin(values)
             proj += 1
-        if projections[2]:  # MEAN
-            unwrapped[k[1], k[0], proj] = np.mean(values)
+        if projections[2]:  # SHAPE
+            unwrapped[loc[1], loc[0], proj] = len(values)
             proj += 1
-        if projections[3]:  # SUM
-            unwrapped[k[1], k[0], proj] = np.sum(values)
+        if projections[3]:  # MEAN
+            unwrapped[loc[1], loc[0], proj] = np.mean(values)
             proj += 1
     return unwrapped
 
@@ -271,19 +273,13 @@ def lookup_spherical(data_rescaled, raysLUT, fineness, projections):
 # ---- only used in generating LUT ----
 
 
-# @jit(nopython=True)
-def fill_ray_table(fineness, scale, rays):
-    # needs helper functions for np.unique and np.all to jit :(
-    # TODO remove dummy ; remove fineness!!
-    dummy = np.zeros((scale, scale, scale), dtype=np.int16)
-    centroid = np.array(dummy.shape, dtype=np.float32) / 2.0
+@jit(nopython=True)
+def fill_ray_table(scale, GLQcoords, rays):
+    centroid = (
+        np.array([scale, scale, scale], dtype=np.float32) / 2.0
+    ) + 0.1  # slightly offset to reduce float rounding errors at the border
+    glq_lat, glq_lon = np.deg2rad(GLQcoords[0]), np.deg2rad(GLQcoords[1])
 
-    glq_degrees = GLQGridCoord(fineness)
-    glq_lat, glq_lon = np.deg2rad(glq_degrees[0]), np.deg2rad(glq_degrees[1])
-
-    # For DH2 sampling
-    # pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness * 2)
-    # pirange = np.linspace(-1 * np.pi, 0 * np.pi, fineness * 2)
     for phi_ix, lon in enumerate(glq_lon):
         for theta_ix, lat in enumerate(glq_lat):
             ray = np.array(
@@ -293,21 +289,26 @@ def fill_ray_table(fineness, scale, rays):
                     np.cos((np.pi / 2) - lat),
                 ]
             )
-            # DH2 legacy:
-            # ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
-            pixels = march(ray, centroid, dummy, marchlen=0.3).astype(np.int16)
-            rays[(phi_ix, theta_ix)] = pixels.copy()
-    # save shape of array in indexes -1, -1
-    rays[(-1, -1)] = np.array([[len(glq_lon), len(glq_lat), 0]]).astype(np.int16)
+            pixels = march(ray, centroid, scale, marchlen=0.003).astype(np.int16).copy()
+
+            # find unique
+            diff = np.sum(pixels[1:, :] - pixels[:-1, :], axis=1)
+            nz = np.nonzero(diff)[0]
+            unique_pixels = np.zeros((nz.shape[0], 3), dtype=np.int16)
+            unique_pixels[0, :] = pixels[0]
+            for ix, val in enumerate(nz):  # ix+1 this is because np.insert doesnt njit
+                unique_pixels[ix + 1, :] = pixels[val + 1]
+
+            rays[(phi_ix, theta_ix)] = unique_pixels
     return rays
 
 
 @jit(nopython=True)
-def march(ray, centroid, data, marchlen):
+def march(ray, centroid, scale, marchlen):
     increment = ray * marchlen
     distances = []
     normals = [np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0])]
-    bounds = [np.array(data.shape) - np.array([1.0, 1.0, 1.0]), np.array([0.0, 0.0, 0.0])]
+    bounds = [np.array([scale, scale, scale]).astype(np.float64), np.array([0.0, 0.0, 0.0])]
     for normal in normals:
         for bound in bounds:
             intersect = isect_dist_line_plane(centroid, ray, bound, normal)
@@ -319,9 +320,7 @@ def march(ray, centroid, data, marchlen):
         np.linspace(centroid[1], end[1], int(est_length)),
         np.linspace(centroid[2], end[2], int(est_length)),
     )
-    # pixels = np.around(np.stack(pixels)).T
     pixels = np.stack(pixels).T
-    # pixels = np.round_(pixels)
     return pixels
 
 
