@@ -143,7 +143,6 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 zero, w = pysh.expand.SHGLQ(self.fineness)
                 coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
                 power_per_dlogl = spectrum(coeffs, unit="per_dlogl", base=2)
-                # print(time.time()-t4)
 
                 # bin in 2log spaced bins
                 bins = np.logspace(0, np.log2(len(power_per_dlogl)), num=20, base=2, endpoint=True)
@@ -151,7 +150,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 for degree, power in enumerate(power_per_dlogl[1:]):
                     current_bin.append(power)
                     if degree + 1 >= bins[bin_ix]:
-                        if len(current_bin) > 0:  # this is for high bins/indices
+                        if len(current_bin) > 0:  # this is for high ratio bins/degrees
                             means.append(np.mean(current_bin))
                         bin_ix += 1
                         current_bin = []
@@ -204,7 +203,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
     def get_ray_table(self):
         # try to load or generate new
-        # loading requires retyping of the dictionary for numba, which slows it down
+        # loading requires retyping of the dictionary for numba, which slows it down (see: https://github.com/numba/numba/issues/8797)
         try:
             t0 = time.time()
             name = "sphericalLUT" + str(self.scale) + ".pickle"
@@ -219,21 +218,17 @@ class SphericalProjection(ObjectFeaturesPlugin):
             print("loaded ray table in: ", time.time() - t0)
             return typed_rays
         except Exception as e:
-            return self.generate_ray_table()
-
-    def generate_ray_table(self):
-        # make new ray table; here do all tasks outside of numba handling (end of file)
-        print("recalculating LUT")
-        t0 = time.time()
-        rays = typed.Dict.empty(
-            key_type=typeof((1, 1)),
-            value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
-        )
-        fill_ray_table(self.scale, GLQGridCoord(self.fineness), rays)
-        self.save_ray_table(rays)
-        t1 = time.time()
-        print("time to make ray table: ", t1 - t0)
-        return rays
+            print("recalculating LUT")
+            t0 = time.time()
+            rays = typed.Dict.empty(
+                key_type=typeof((1, 1)),
+                value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
+            )
+            fill_ray_table(self.scale, GLQGridCoord(self.fineness), rays)
+            self.save_ray_table(rays)
+            t1 = time.time()
+            print("time to make ray table: ", t1 - t0)
+            return rays
 
 
 # All numba-accelerated functions cannot receive self, so are not class functions
@@ -247,9 +242,7 @@ def lookup_spherical(img, raysLUT, fineness, projections):
         values = np.zeros(ray.shape[0])
         for ix, voxel in enumerate(ray):
             values[ix] = img[voxel[0], voxel[1], voxel[2]]
-
-            if values[ix] < 0:
-                # quit when outside of object mask -  all outside of mask are set to -1
+            if values[ix] < 0:  # quit when outside of object mask -  all outside of mask are set to -1
                 if ix != 0:  # centroid is not outside of mask
                     values = values[:ix]
                     break
@@ -262,7 +255,13 @@ def lookup_spherical(img, raysLUT, fineness, projections):
             unwrapped[loc[1], loc[0], proj] = np.amin(values)
             proj += 1
         if projections[2]:  # SHAPE
-            unwrapped[loc[1], loc[0], proj] = len(values)
+            # print( np.linalg.norm(ray[0]-ray[len(values)]))
+            if np.linalg.norm(ray[0] - ray[len(values) - 1]) > 90:
+                print(ray[0], ray[len(values)], len(values) - 1, np.linalg.norm(ray[0] - ray[len(values)]))
+                print(ray)
+            unwrapped[loc[1], loc[0], proj] = np.linalg.norm(
+                ray[0].astype(np.float64) - ray[len(values) - 1].astype(np.float64)
+            )
             proj += 1
         if projections[3]:  # MEAN
             unwrapped[loc[1], loc[0], proj] = np.mean(values)
@@ -333,4 +332,4 @@ def isect_dist_line_plane(centroid, raydir, planepoint, planenormal, epsilon=1e-
         fac = -np.dot(planenormal, w) / dot
         if fac > 0:
             return fac
-    return np.inf
+    return np.inf  # parallel ray and plane
