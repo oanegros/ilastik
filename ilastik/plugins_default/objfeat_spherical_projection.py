@@ -78,11 +78,11 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
         if labels.ndim == 3:
             names = [  # compute_local actually uses the last number to set self.scale, so be careful changing
-                "resolution 10x10x10",
-                "resolution 20x20x20",
-                "resolution 40x40x40",
-                "resolution 80x80x80",
-                # "resolution 160x160x160",
+                "resolution 010x10x10",
+                "resolution 020x20x20",
+                "resolution 040x40x40",
+                "resolution 080x80x80",
+                "resolution 160x160x160",
             ]
             for proj in self.projectionorder:
                 names.append(proj)
@@ -125,12 +125,14 @@ class SphericalProjection(ObjectFeaturesPlugin):
         if self.raysLUT == None:
             self.raysLUT = self.get_ray_table()
 
-        cube = resize(image, (self.scale, self.scale, self.scale), preserve_range=True)
+        cube = resize(image, (self.scale, self.scale, self.scale))  # this normalizes min to max
         mask_cube = resize(img_as_bool(mask_object), (self.scale, self.scale, self.scale), order=0)
         segmented_cube = np.where(mask_cube, cube, -1)
         t1 = time.time()
-        unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, self.projections)
-
+        if np.count_nonzero(mask_object) > 30:
+            unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, self.projections)
+        else:  # artefacts of cellpose and other segmentation things are filtered out for time
+            unwrapped = np.zeros((self.fineness + 1, self.fineness * 2 + 1, np.sum(self.projections)), dtype=np.float64)
         t2 = time.time()
 
         result = {}
@@ -138,7 +140,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         for which_proj, projected in enumerate(self.projections):
             if projected:
                 projection = unwrapped[:, :, projectedix].astype(float)
-                # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped2/'+ str(t0) + "_" + str(np.count_nonzero(mask_object))+ "_" + str(np.count_nonzero(mask_object==0))+self.projectionorder[which_proj]+"unwrapGLQ_masked.png",  projection)
+                # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped3/'+ str(t0) + "_" + str(np.count_nonzero(mask_object))+ "_" + str(np.count_nonzero(mask_object==0))+self.projectionorder[which_proj]+"unwrapGLQ_masked.png",  projection)
                 projectedix += 1  #
                 zero, w = pysh.expand.SHGLQ(self.fineness)
                 coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
@@ -155,7 +157,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                         bin_ix += 1
                         current_bin = []
                 result[self.projectionorder[which_proj]] = np.log2(means)
-                # result[self.projectionorder[which_proj]] = np.log2(power_per_dlogl)
+                result[self.projectionorder[which_proj]] = np.log2(power_per_dlogl)
 
         t3 = time.time()
         print("time to do full unwrap and expand: \t", t3 - t0)
@@ -255,10 +257,6 @@ def lookup_spherical(img, raysLUT, fineness, projections):
             unwrapped[loc[1], loc[0], proj] = np.amin(values)
             proj += 1
         if projections[2]:  # SHAPE
-            # print( np.linalg.norm(ray[0]-ray[len(values)]))
-            if np.linalg.norm(ray[0] - ray[len(values) - 1]) > 90:
-                print(ray[0], ray[len(values)], len(values) - 1, np.linalg.norm(ray[0] - ray[len(values)]))
-                print(ray)
             unwrapped[loc[1], loc[0], proj] = np.linalg.norm(
                 ray[0].astype(np.float64) - ray[len(values) - 1].astype(np.float64)
             )
