@@ -64,57 +64,48 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
     # projection order is
     projectionorder = ["MAX projection", "MIN projection", "SHAPE projection", "MEAN projection"]
+    scaleorder = ["low degrees", "high degrees (undersampled)", "high degrees"]
     # It might be more maintainable to have this as a list of tuples with the axis in there, but you would probably need to do string comparison instead of boolean checks in the lookup
     # projections = [("MAX projection",-1), ("MIN projection",-1), ("Length",-1), ("MEAN projection",-1)]
     # or best would be a dictionary of featname : func, but this might give numba-issues
     projections = np.zeros(len(projectionorder), dtype=bool)  # contains selection of which projections should be done
+    features = None
 
     # Set in compute_local on first run:
     raysLUT = None
-    fineness = None
-    scale = 0
+    scale = 80
+    fineness = int(np.pi * scale)
 
     def availableFeatures(self, image, labels):
 
-        if labels.ndim == 3:
-            names = [  # compute_local actually uses the last number to set self.scale, so be careful changing
-                "resolution 010x10x10",
-                "resolution 020x20x20",
-                "resolution 040x40x40",
-                "resolution 080x80x80",
-                "resolution 160x160x160",
-            ]
-            for proj in self.projectionorder:
-                names.append(proj)
-            tooltips = {}
-            result = dict((n, {}) for n in names)
-            result = self.fill_properties(result)
-            for f, v in result.items():
-                v["tooltip"] = "Spherical projections " + f
-        else:
-            result = {}
+        if labels.ndim != 3:
+            return {}
 
+        names = []
+        result = {}
+        for proj in self.projectionorder:
+            for ix, scale in enumerate(self.scaleorder):
+                name = proj + " - " + scale
+                result[name] = {}
+                result[name]["group"] = proj
+                result[name]["tooltip"] = name
+                result[name]["margin"] = 0
+                if ix == 0:
+                    result[name]["displaytext"] = "coarse details"
+                    result[name][
+                        "detailtext"
+                    ] = f"Spherical harmonic degrees up to n of a {proj} spherical projection of the data"
+                if ix == 1:
+                    result[name]["displaytext"] = "fine details (averaged)"
+                    result[name][
+                        "detailtext"
+                    ] = f"Log2 undersampled spherical harmonic degrees from n of a {proj} spherical projection of the data"
+                if ix == 2:
+                    result[name]["displaytext"] = "fine details"
+                    result[name][
+                        "detailtext"
+                    ] = f"Spherical harmonic degrees from n of a {proj} spherical projection of the data; Adds many features."
         return result
-
-    @staticmethod
-    def fill_properties(features):
-        # fill in the detailed zinformation about the features.
-        # features should be a dict with the feature_name as key.
-        # NOTE, this function needs to be updated every time skeleton features change
-        for feature in features:
-            features[feature]["displaytext"] = feature
-            if "resolution" in feature:
-                features[feature]["group"] = "Max resolution"
-                features[feature][
-                    "detailtext"
-                ] = "Object is rescaled to max checked resolution before spherical projection, lower is faster."
-            if "projection" in feature:
-                features[feature]["group"] = "Projection types"
-                features[feature][
-                    "detailtext"
-                ] = "All checked projections currently provide int(1D_resolution*π) features"
-            features[feature]["margin"] = 0  # needs to be set to trigger compute_local
-        return features
 
     def unwrap_and_expand(self, image, binary_bbox, axes, features):
 
@@ -125,14 +116,14 @@ class SphericalProjection(ObjectFeaturesPlugin):
         if self.raysLUT == None:
             self.raysLUT = self.get_ray_table()
 
-        cube = resize(image, (self.scale, self.scale, self.scale))  # this normalizes min to max
+        cube = resize(image, (self.scale, self.scale, self.scale), preserve_range=False)  # this normalizes the data
         mask_cube = resize(img_as_bool(mask_object), (self.scale, self.scale, self.scale), order=0)
         segmented_cube = np.where(mask_cube, cube, -1)
         t1 = time.time()
-        if np.count_nonzero(mask_object) > 30:
-            unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, self.projections)
-        else:  # artefacts of cellpose and other segmentation things are filtered out for time
-            unwrapped = np.zeros((self.fineness + 1, self.fineness * 2 + 1, np.sum(self.projections)), dtype=np.float64)
+        # if np.count_nonzero(mask_object) > 30:
+        unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, self.projections)
+        # else:  # artefacts of cellpose and other segmentation things are filtered out for time
+        #     unwrapped = np.zeros((self.fineness + 1, self.fineness * 2 + 1, np.sum(self.projections)), dtype=np.float64)
         t2 = time.time()
 
         result = {}
@@ -156,8 +147,12 @@ class SphericalProjection(ObjectFeaturesPlugin):
                             means.append(np.mean(current_bin))
                         bin_ix += 1
                         current_bin = []
-                result[self.projectionorder[which_proj]] = np.log2(means)
-                result[self.projectionorder[which_proj]] = np.log2(power_per_dlogl)
+                if self.projectionorder[which_proj] + " - " + self.scaleorder[0] in self.features:
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[0]] = power_per_dlogl[1:9]
+                if self.projectionorder[which_proj] + " - " + self.scaleorder[1] in self.features:
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[1]] = means[8:]
+                if self.projectionorder[which_proj] + " - " + self.scaleorder[2] in self.features:
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[1]] = power_per_dlogl[9:]
 
         t3 = time.time()
         print("time to do full unwrap and expand: \t", t3 - t0)
@@ -169,21 +164,13 @@ class SphericalProjection(ObjectFeaturesPlugin):
         results.append(self.unwrap_and_expand(image, binary_bbox, axes, features))
         return results[0]
 
-    def init_selection(self, features):
-        for featurename in features:
-            if "resolution" in featurename:
-                self.scale = max(self.scale, int(featurename.split(" ")[-1].split("x")[-1]))
-                self.fineness = int(np.pi * self.scale)
-            else:
-                for ix, proj in enumerate(self.projectionorder):
-                    if proj == featurename:
-                        self.projections[ix] = True
-        return
-
     def compute_local(self, image, binary_bbox, features, axes):
-        if self.fineness == None:
-            self.init_selection(features)
-        # print(binary_bbox.shape)
+        # if self.fineness == None:
+        for feature in features:
+            for ix, proj in enumerate(self.projectionorder):
+                if proj == features[feature]["group"]:
+                    self.projections[ix] = True
+        self.features = features
         orig_bbox = binary_bbox
         margin = [(np.min(dim), np.max(dim) + 1) for dim in np.nonzero(binary_bbox)]
         image = image[margin[0][0] : margin[0][1], margin[1][0] : margin[1][1], margin[2][0] : margin[2][1]]
