@@ -46,6 +46,7 @@ from pyshtools.shtools import GLQGridCoord
 from pyshtools.expand import SHExpandGLQ
 from pyshtools.spectralanalysis import spectrum
 
+import threading
 
 # saving/loading LUT
 import pickle as pickle
@@ -55,7 +56,12 @@ from pathlib import Path
 import time
 import matplotlib.pyplot as plt
 
+# TODO this is currently broken, but can be fixed once ilastik python version is bumped
+# pysh.backends.select_preferred_backend(backend='ducc', nthreads=1)
+
 logger = logging.getLogger(__name__)
+
+_condition = threading.RLock()
 
 
 class SphericalProjection(ObjectFeaturesPlugin):
@@ -64,10 +70,12 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
     # projection order is
     projectionorder = ["MAX projection", "MIN projection", "SHAPE projection", "MEAN projection"]
-    scaleorder = ["low degrees", "high degrees (undersampled)", "high degrees"]
-    # It might be more maintainable to have this as a list of tuples with the axis in there, but you would probably need to do string comparison instead of boolean checks in the lookup
-    # projections = [("MAX projection",-1), ("MIN projection",-1), ("Length",-1), ("MEAN projection",-1)]
-    # or best would be a dictionary of featname : func, but this might give numba-issues
+    scaleorder = [
+        "low degrees",
+        "high degrees (undersampled)",
+        "high degrees",
+    ]  # NOTE this is redefined in fill_properties
+
     projections = np.zeros(len(projectionorder), dtype=bool)  # contains selection of which projections should be done
     features = None
 
@@ -87,25 +95,38 @@ class SphericalProjection(ObjectFeaturesPlugin):
             for ix, scale in enumerate(self.scaleorder):
                 name = proj + " - " + scale
                 result[name] = {}
-                result[name]["group"] = proj
-                result[name]["tooltip"] = name
-                result[name]["margin"] = 0
-                if ix == 0:
-                    result[name]["displaytext"] = "coarse details"
-                    result[name][
-                        "detailtext"
-                    ] = f"Spherical harmonic degrees up to n of a {proj} spherical projection of the data"
-                if ix == 1:
-                    result[name]["displaytext"] = "fine details (averaged)"
-                    result[name][
-                        "detailtext"
-                    ] = f"Log2 undersampled spherical harmonic degrees from n of a {proj} spherical projection of the data"
-                if ix == 2:
-                    result[name]["displaytext"] = "fine details"
-                    result[name][
-                        "detailtext"
-                    ] = f"Spherical harmonic degrees from n of a {proj} spherical projection of the data; Adds many features."
+
+        result = self.fill_properties(result)
+        for f, v in result.items():
+            v["tooltip"] = f
         return result
+
+    @staticmethod
+    def fill_properties(features):
+        # fill in the detailed information about the features.
+        # features should be a dict with the feature_name as key.
+        # NOTE, this function needs to be updated every time skeleton features change
+        scaleorder = ["low degrees", "high degrees (undersampled)", "high degrees"]
+        for name, feature in features.items():
+            proj, scl = [part.strip() for part in name.split("-")]
+            feature["group"] = proj
+            feature["margin"] = 0
+            if scl == scaleorder[0]:
+                feature["displaytext"] = "coarse details"
+                feature[
+                    "detailtext"
+                ] = f"Spherical harmonic degrees up to n of a {proj} spherical projection of the data"
+            if scl == scaleorder[1]:
+                feature["displaytext"] = "fine details (averaged)"
+                feature[
+                    "detailtext"
+                ] = f"Log2 undersampled spherical harmonic degrees from n of a {proj} spherical projection of the data"
+            if scl == scaleorder[2]:
+                feature["displaytext"] = "fine details"
+                feature[
+                    "detailtext"
+                ] = f"Spherical harmonic degrees from n of a {proj} spherical projection of the data; Adds many features."
+        return features
 
     def unwrap_and_expand(self, image, binary_bbox, axes, features):
 
@@ -113,10 +134,12 @@ class SphericalProjection(ObjectFeaturesPlugin):
         rawbbox = image
         mask_object = binary_bbox
 
-        if self.raysLUT == None:
-            self.raysLUT = self.get_ray_table()
+        # TODO reset conditionality here
+        self.raysLUT = self.get_ray_table()
 
-        cube = resize(image, (self.scale, self.scale, self.scale), preserve_range=False)  # this normalizes the data
+        cube = resize(
+            image, (self.scale, self.scale, self.scale), preserve_range=True, order=1
+        )  # this normalizes the data
         mask_cube = resize(img_as_bool(mask_object), (self.scale, self.scale, self.scale), order=0)
         segmented_cube = np.where(mask_cube, cube, -1)
         t1 = time.time()
@@ -131,10 +154,25 @@ class SphericalProjection(ObjectFeaturesPlugin):
         for which_proj, projected in enumerate(self.projections):
             if projected:
                 projection = unwrapped[:, :, projectedix].astype(float)
-                # plt.imsave('/Users/oanegros/Documents/screenshots/tmp_unwrapped3/'+ str(t0) + "_" + str(np.count_nonzero(mask_object))+ "_" + str(np.count_nonzero(mask_object==0))+self.projectionorder[which_proj]+"unwrapGLQ_masked.png",  projection)
-                projectedix += 1  #
+                print(self.projectionorder[which_proj], np.max(projection), np.min(projection))
+
+                plt.imsave(
+                    "/Users/oanegros/Documents/screenshots/tmp_unwrapped4/"
+                    + str(t0)
+                    + "_"
+                    + str(np.count_nonzero(mask_object))
+                    + "_"
+                    + str(np.count_nonzero(mask_object == 0))
+                    + self.projectionorder[which_proj]
+                    + "unwrapGLQ_masked.png",
+                    projection,
+                )
+                projectedix += 1
+
                 zero, w = pysh.expand.SHGLQ(self.fineness)
-                coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
+                with _condition:  # shtools backend is not thread-safec
+                    coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
+
                 power_per_dlogl = spectrum(coeffs, unit="per_dlogl", base=2)
 
                 # bin in 2log spaced bins
@@ -164,19 +202,28 @@ class SphericalProjection(ObjectFeaturesPlugin):
         results.append(self.unwrap_and_expand(image, binary_bbox, axes, features))
         return results[0]
 
+    # def compute_global(self, image, labels, features, axes){
+
+    # }
+
     def compute_local(self, image, binary_bbox, features, axes):
         # if self.fineness == None:
+        print(axes)
         for feature in features:
             for ix, proj in enumerate(self.projectionorder):
                 if proj == features[feature]["group"]:
                     self.projections[ix] = True
         self.features = features
         orig_bbox = binary_bbox
+
+        np.nonzero(orig_bbox)
         margin = [(np.min(dim), np.max(dim) + 1) for dim in np.nonzero(binary_bbox)]
+        print(margin)
         image = image[margin[0][0] : margin[0][1], margin[1][0] : margin[1][1], margin[2][0] : margin[2][1]]
         binary_bbox = binary_bbox[margin[0][0] : margin[0][1], margin[1][0] : margin[1][1], margin[2][0] : margin[2][1]]
 
         assert np.sum(orig_bbox) - np.sum(binary_bbox) == 0
+        print(np.sum(image))
         return self.do_channels(self._do_3d, image, binary_bbox=binary_bbox, features=features, axes=axes)
 
     def save_ray_table(self, rays):
@@ -200,7 +247,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 newLUT = pickle.load(handle)
             typed_rays = typed.Dict.empty(
                 key_type=typeof((1, 1)),
-                value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
+                value_type=typeof(np.zeros((1, 3), dtype=np.int32)),
             )
             for k, v in newLUT.items():
                 typed_rays[k] = v
@@ -211,7 +258,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
             t0 = time.time()
             rays = typed.Dict.empty(
                 key_type=typeof((1, 1)),
-                value_type=typeof(np.zeros((1, 3), dtype=np.int16)),
+                value_type=typeof(np.zeros((1, 3), dtype=np.int32)),
             )
             fill_ray_table(self.scale, GLQGridCoord(self.fineness), rays)
             self.save_ray_table(rays)
@@ -225,6 +272,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
 @jit(nopython=True)
 def lookup_spherical(img, raysLUT, fineness, projections):
+    print("lookup")
     unwrapped = np.zeros((fineness + 1, fineness * 2 + 1, np.sum(projections)), dtype=np.float64)
     for loc, ray in raysLUT.items():
         # TODO update indexing to "values = img[ray[:,0],ray[:,1],ray[:,2]]" or similar once numba multiple advanced indexing is merged https://github.com/numba/numba/pull/8491
@@ -239,18 +287,28 @@ def lookup_spherical(img, raysLUT, fineness, projections):
         ray = ray.astype(np.float64)
         if projections[0]:  # MAX
             unwrapped[loc[1], loc[0], proj] = np.amax(values)
+            if np.isnan(np.amax(values)):
+                print(np.argmax(values), len(values), np.amax(values), values, ray[np.argmax(values)])
             proj += 1
         if projections[1]:  # MIN
             unwrapped[loc[1], loc[0], proj] = np.amin(values)
             proj += 1
         if projections[2]:  # SHAPE
-            unwrapped[loc[1], loc[0], proj] = np.linalg.norm(
-                ray[0].astype(np.float64) - ray[len(values) - 1].astype(np.float64)
-            )
+            endloc = ray[len(values) - 1]
+            for dimix, i in enumerate(endloc):
+                if i > 0:  # TODO figure out why this is necessary - it's something with pixel flooring
+                    endloc[dimix] += 0.5
+
+            unwrapped[loc[1], loc[0], proj] = np.linalg.norm(ray[0].astype(np.float64) - endloc.astype(np.float64))
             proj += 1
         if projections[3]:  # MEAN
-            unwrapped[loc[1], loc[0], proj] = np.mean(values)
+            # unwrapped[loc[1], loc[0], proj] = np.sum(values)/ np.linalg.norm(
+            #     ray[0].astype(np.float64) - ray[len(values) - 1].astype(np.float64)
+            # )
+            # unwrapped[loc[1], loc[0], proj] = np.sum(values)/ len(values)
+            unwrapped[loc[1], loc[0], proj] = np.sum(values) / unwrapped[loc[1], loc[0], proj - 1]
             proj += 1
+    print("done with lookup")
     return unwrapped
 
 
@@ -259,9 +317,8 @@ def lookup_spherical(img, raysLUT, fineness, projections):
 
 @jit(nopython=True)
 def fill_ray_table(scale, GLQcoords, rays):
-    centroid = (
-        np.array([scale, scale, scale], dtype=np.float32) / 2.0
-    ) + 0.1  # slightly offset to reduce float rounding errors at the border
+    centroid = np.array([scale, scale, scale], dtype=np.float32) / 2.0
+    # centroid += 0.01 # slightly offset to reduce float rounding errors at the border
     glq_lat, glq_lon = np.deg2rad(GLQcoords[0]), np.deg2rad(GLQcoords[1])
 
     for phi_ix, lon in enumerate(glq_lon):
@@ -273,12 +330,15 @@ def fill_ray_table(scale, GLQcoords, rays):
                     np.cos((np.pi / 2) - lat),
                 ]
             )
-            pixels = march(ray, centroid, scale, marchlen=0.003).astype(np.int16).copy()
+            pixels = march(ray, centroid, scale, marchlen=0.003).astype(np.int32).copy()
 
-            # find unique
-            diff = np.sum(pixels[1:, :] - pixels[:-1, :], axis=1)
-            nz = np.nonzero(diff)[0]
-            unique_pixels = np.zeros((nz.shape[0], 3), dtype=np.int16)
+            # find unique pixels and keep order
+
+            # NUMBA-fied version of: different = np.any(pixels[:-1, :] - pixels[1:, :],axis=1)
+            different = np.array([np.any(difference) for difference in (pixels[:-1, :] - pixels[1:, :])])
+
+            nz = np.nonzero(different)[0]
+            unique_pixels = np.zeros((nz.shape[0] + 1, 3), dtype=np.int32)
             unique_pixels[0, :] = pixels[0]
             for ix, val in enumerate(nz):  # ix+1 this is because np.insert doesnt njit
                 unique_pixels[ix + 1, :] = pixels[val + 1]
