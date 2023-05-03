@@ -47,6 +47,7 @@ from pyshtools.expand import SHExpandGLQ
 from pyshtools.spectralanalysis import spectrum
 
 import threading
+import tifffile
 
 # saving/loading LUT
 import pickle as pickle
@@ -154,8 +155,16 @@ class SphericalProjection(ObjectFeaturesPlugin):
         for which_proj, projected in enumerate(self.projections):
             if projected:
                 projection = unwrapped[:, :, projectedix].astype(float)
-                print(self.projectionorder[which_proj], np.max(projection), np.min(projection))
-
+                # print(self.projectionorder[which_proj], np.max(projection), np.min(projection))
+                # tifffile.imwrite("/Users/oanegros/Documents/screenshots/tmp_unwrapped4/"
+                #     + str(t0)
+                #     + "_"
+                #     + str(np.count_nonzero(mask_object))
+                #     + "_"
+                #     + str(np.count_nonzero(mask_object == 0))
+                #     + self.projectionorder[which_proj]
+                #     + "unwrapGLQ_masked.tif",
+                #     (projection*100).astype(np.int16), imagej=True)
                 plt.imsave(
                     "/Users/oanegros/Documents/screenshots/tmp_unwrapped4/"
                     + str(t0)
@@ -202,13 +211,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         results.append(self.unwrap_and_expand(image, binary_bbox, axes, features))
         return results[0]
 
-    # def compute_global(self, image, labels, features, axes){
-
-    # }
-
     def compute_local(self, image, binary_bbox, features, axes):
-        # if self.fineness == None:
-        print(axes)
         for feature in features:
             for ix, proj in enumerate(self.projectionorder):
                 if proj == features[feature]["group"]:
@@ -218,12 +221,10 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
         np.nonzero(orig_bbox)
         margin = [(np.min(dim), np.max(dim) + 1) for dim in np.nonzero(binary_bbox)]
-        print(margin)
         image = image[margin[0][0] : margin[0][1], margin[1][0] : margin[1][1], margin[2][0] : margin[2][1]]
         binary_bbox = binary_bbox[margin[0][0] : margin[0][1], margin[1][0] : margin[1][1], margin[2][0] : margin[2][1]]
 
         assert np.sum(orig_bbox) - np.sum(binary_bbox) == 0
-        print(np.sum(image))
         return self.do_channels(self._do_3d, image, binary_bbox=binary_bbox, features=features, axes=axes)
 
     def save_ray_table(self, rays):
@@ -287,26 +288,18 @@ def lookup_spherical(img, raysLUT, fineness, projections):
         ray = ray.astype(np.float64)
         if projections[0]:  # MAX
             unwrapped[loc[1], loc[0], proj] = np.amax(values)
-            if np.isnan(np.amax(values)):
-                print(np.argmax(values), len(values), np.amax(values), values, ray[np.argmax(values)])
             proj += 1
         if projections[1]:  # MIN
             unwrapped[loc[1], loc[0], proj] = np.amin(values)
             proj += 1
         if projections[2]:  # SHAPE
-            endloc = ray[len(values) - 1]
-            for dimix, i in enumerate(endloc):
-                if i > 0:  # TODO figure out why this is necessary - it's something with pixel flooring
-                    endloc[dimix] += 0.5
-
-            unwrapped[loc[1], loc[0], proj] = np.linalg.norm(ray[0].astype(np.float64) - endloc.astype(np.float64))
+            vec = ray[0].astype(np.float64) - ray[len(values) - 1].astype(np.float64)
+            vec -= vec < 0  # integer flooring issues
+            unwrapped[loc[1], loc[0], proj] = np.linalg.norm(vec)
             proj += 1
         if projections[3]:  # MEAN
-            # unwrapped[loc[1], loc[0], proj] = np.sum(values)/ np.linalg.norm(
-            #     ray[0].astype(np.float64) - ray[len(values) - 1].astype(np.float64)
-            # )
-            # unwrapped[loc[1], loc[0], proj] = np.sum(values)/ len(values)
-            unwrapped[loc[1], loc[0], proj] = np.sum(values) / unwrapped[loc[1], loc[0], proj - 1]
+            unwrapped[loc[1], loc[0], proj] = np.sum(values) / len(values)
+            # unwrapped[loc[1], loc[0], proj] = np.sum(values) / (unwrapped[loc[1], loc[0], proj - 1])
             proj += 1
     print("done with lookup")
     return unwrapped
@@ -352,7 +345,7 @@ def march(ray, centroid, scale, marchlen):
     increment = ray * marchlen
     distances = []
     normals = [np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0])]
-    bounds = [np.array([scale, scale, scale]).astype(np.float64), np.array([0.0, 0.0, 0.0])]
+    bounds = [np.array([scale, scale, scale]).astype(np.float64) - 0.4, np.array([0.0, 0.0, 0.0])]
     for normal in normals:
         for bound in bounds:
             intersect = isect_dist_line_plane(centroid, ray, bound, normal)
