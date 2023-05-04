@@ -47,6 +47,7 @@ dependencies:
   - pyshtools 
   - blosc <=1.21.0
   - numba
+  - ducc0
 
   # Spherical harmonics dependencies
   - pyshtools 
