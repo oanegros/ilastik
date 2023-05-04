@@ -139,7 +139,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         self.raysLUT = self.get_ray_table()
 
         cube = resize(
-            image, (self.scale, self.scale, self.scale), preserve_range=True, order=1
+            image, (self.scale, self.scale, self.scale), preserve_range=False, order=1
         )  # this normalizes the data
         mask_cube = resize(img_as_bool(mask_object), (self.scale, self.scale, self.scale), order=0)
         segmented_cube = np.where(mask_cube, cube, -1)
@@ -182,6 +182,17 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 with _condition:  # shtools backend is not thread-safec
                     coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
 
+                pysh.SHCoeffs.from_array(coeffs).plot_spectrum(
+                    show=False,
+                    unit="per_dlogl",
+                    fname="/Users/oanegros/Documents/screenshots/tmp_unwrapped4/"
+                    + str(t0)
+                    + "_spectrum_"
+                    + str(np.count_nonzero(mask_object == 0))
+                    + self.projectionorder[which_proj]
+                    + ".png",
+                )
+
                 power_per_dlogl = spectrum(coeffs, unit="per_dlogl", base=2)
 
                 # bin in 2log spaced bins
@@ -194,6 +205,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                             means.append(np.mean(current_bin))
                         bin_ix += 1
                         current_bin = []
+
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[0] in self.features:
                     result[self.projectionorder[which_proj] + " - " + self.scaleorder[0]] = power_per_dlogl[1:9]
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[1] in self.features:
