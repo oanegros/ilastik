@@ -46,6 +46,7 @@ dependencies:
   - pyshtools 
   - blosc <=1.21.0
   - numba
+  - ducc0
 
   # Neural Network Workflow dependencies
   # can be changed to request gpu versions
