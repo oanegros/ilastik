@@ -80,11 +80,11 @@ class SphericalProjection(ObjectFeaturesPlugin):
     projections = np.zeros(len(projectionorder), dtype=bool)  # contains selection of which projections should be done
     features = None
     raysLUT = None
+    bin_start, bin_ends, n_coarse = None, None, None
 
     # Hyperparameters
     scale = 80  # transforms to cube of size scale by scale by scale
     reduced_spectrum_length = 20  # length of coarse + fine details (averaged)
-    fineness = int(np.pi * scale)
 
     def availableFeatures(self, image, labels):
 
@@ -146,7 +146,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         segmented_cube = np.where(mask_cube, cube, -1)
         t1 = time.time()
 
-        unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, self.projections)
+        unwrapped = lookup_spherical(segmented_cube, self.raysLUT, int(np.pi * self.scale), self.projections)
 
         t2 = time.time()
 
@@ -178,7 +178,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 )
                 projectedix += 1
 
-                zero, w = pysh.expand.SHGLQ(self.fineness)
+                zero, w = pysh.expand.SHGLQ(int(np.pi * self.scale))
                 with _condition:  # shtools backend is not thread-safec
                     coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
 
@@ -205,33 +205,23 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 power_per_dlogl = spectrum(coeffs, unit="per_dlogl", base=2)
 
                 # bin higher degrees in 2log spaced bins:
-                bin_ends = np.logspace(
-                    0, np.log2(len(power_per_dlogl) - 1), num=self.reduced_spectrum_length, base=2, endpoint=True
-                ).astype(int)
-                bin_start = np.roll(bin_ends, 1)
-
-                # To ensure n bins, all are separate ('coarse') values until degree >= bin_end
-                # if you bin normally on 2log, from np.argmax((bin_ends - bin_start)>1), you get less bins (or multiple with the same value)
-                avgfrom = np.argmax(bin_ends[1:] - (np.arange(len(bin_ends))[1:]) > 0) + 1
-                if self.reduced_spectrum_length > len(power_per_dlogl):
-                    avgfrom = len(power_per_dlogl)
-                bin_start, bin_ends = bin_start[avgfrom:], bin_ends[avgfrom:]
-                bin_start[0] = max(avgfrom, bin_start[0])
-                means, meanix = [], []
-                for start, end in zip(bin_start, bin_ends):
-                    means.append(np.mean(power_per_dlogl[start:end]))
-                    meanix.append(np.mean([start, end]))
-
-                # print(list(np.arange(avgfrom, dtype=float) + 1) + meanix) # Bin center values
+                if self.n_coarse is None:
+                    self.get_bins(len(power_per_dlogl))
+                means = [
+                    np.mean(power_per_dlogl[start:end]) for start, end in zip(self.bin_start, self.bin_ends)
+                ]  # # Bin center values:
+                # print(list(np.arange(self.n_coarse, dtype=float) + 1) + [np.mean([start,end]) for start, end in zip(self.bin_start, self.bin_ends)])
 
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[0] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[0]] = power_per_dlogl[1:avgfrom]
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[0]] = power_per_dlogl[
+                        1 : self.n_coarse
+                    ]
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[1] in self.features:
-                    result[
-                        self.projectionorder[which_proj] + " - " + self.scaleorder[1]
-                    ] = means  # 2-log spaced bins at [9, 12, 16, 21, 28, 38, 51, 68, 91, 122, 164, 219]
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[1]] = means
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[2] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[2]] = power_per_dlogl[avgfrom:]
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[2]] = power_per_dlogl[
+                        self.n_coarse :
+                    ]
 
         t3 = time.time()
         print("time to do full unwrap and expand: \t", t3 - t0)
@@ -270,6 +260,25 @@ class SphericalProjection(ObjectFeaturesPlugin):
             pickle.dump(outLUT, ofs, protocol=pickle.HIGHEST_PROTOCOL)
         return
 
+    def get_bins(self, veclength):
+        bin_ends = np.logspace(
+            0, np.log2(veclength - 1), num=self.reduced_spectrum_length, base=2, endpoint=True
+        ).astype(int)
+        bin_start = np.roll(bin_ends, 1)
+
+        # To ensure n bins, all are separate ('coarse') values until degree >= bin_end
+        # This makes a linear coarse region and a 2log spaced fine region
+        # if you bin normally on 2log, from np.argmax((bin_ends - bin_start)>1), you get less bins (or multiple with the same value)
+        n_coarse = np.argmax(bin_ends[1:] - (np.arange(len(bin_ends))[1:]) > 0) + 1
+        if self.reduced_spectrum_length > veclength:
+            n_coarse = veclength
+        bin_start, bin_ends = bin_start[n_coarse:], bin_ends[n_coarse:]
+        bin_start[0] = max(n_coarse, bin_start[0])
+        self.bin_start = bin_start
+        self.bin_ends = bin_ends
+        self.n_coarse = n_coarse
+        return
+
     def get_ray_table(self):
         # try to load or generate new
         # loading requires retyping of the dictionary for numba, which slows it down (see: https://github.com/numba/numba/issues/8797)
@@ -293,7 +302,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 key_type=typeof((1, 1)),
                 value_type=typeof(np.zeros((1, 3), dtype=np.int32)),
             )
-            fill_ray_table(self.scale, GLQGridCoord(self.fineness), rays)
+            fill_ray_table(self.scale, GLQGridCoord(int(np.pi * self.scale)), rays)
             self.save_ray_table(rays)
             t1 = time.time()
             print("time to make ray table: ", t1 - t0)
