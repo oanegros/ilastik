@@ -79,10 +79,11 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
     projections = np.zeros(len(projectionorder), dtype=bool)  # contains selection of which projections should be done
     features = None
-
-    # Set in compute_local on first run:
     raysLUT = None
-    scale = 80
+
+    # Hyperparameters
+    scale = 80  # transforms to cube of size scale by scale by scale
+    reduced_spectrum_length = 20  # length of coarse + fine details (averaged)
     fineness = int(np.pi * scale)
 
     def availableFeatures(self, image, labels):
@@ -113,17 +114,17 @@ class SphericalProjection(ObjectFeaturesPlugin):
             feature["group"] = proj
             feature["margin"] = 0
             if scl == scaleorder[0]:
-                feature["displaytext"] = "coarse details"
+                feature["displaytext"] = proj + " coarse details"
                 feature[
                     "detailtext"
                 ] = f"Spherical harmonic degrees up to n of a {proj} spherical projection of the data"
             if scl == scaleorder[1]:
-                feature["displaytext"] = "fine details (averaged)"
+                feature["displaytext"] = proj + " fine details (averaged)"
                 feature[
                     "detailtext"
                 ] = f"Log2 undersampled spherical harmonic degrees from n of a {proj} spherical projection of the data"
             if scl == scaleorder[2]:
-                feature["displaytext"] = "fine details"
+                feature["displaytext"] = proj + " fine details (all)"
                 feature[
                     "detailtext"
                 ] = f"Spherical harmonic degrees from n of a {proj} spherical projection of the data; Adds many features."
@@ -144,10 +145,9 @@ class SphericalProjection(ObjectFeaturesPlugin):
         mask_cube = resize(img_as_bool(mask_object), (self.scale, self.scale, self.scale), order=0)
         segmented_cube = np.where(mask_cube, cube, -1)
         t1 = time.time()
-        # if np.count_nonzero(mask_object) > 30:
+
         unwrapped = lookup_spherical(segmented_cube, self.raysLUT, self.fineness, self.projections)
-        # else:  # artefacts of cellpose and other segmentation things are filtered out for time
-        #     unwrapped = np.zeros((self.fineness + 1, self.fineness * 2 + 1, np.sum(self.projections)), dtype=np.float64)
+
         t2 = time.time()
 
         result = {}
@@ -156,7 +156,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
             if projected:
                 projection = unwrapped[:, :, projectedix].astype(float)
                 # print(self.projectionorder[which_proj], np.max(projection), np.min(projection))
-                # tifffile.imwrite("/Users/oanegros/Documents/screenshots/tmp_unwrapped4/"
+                # tifffile.imwrite("/Users/oanegros/Documents/screenshots/tmp/"
                 #     + str(t0)
                 #     + "_"
                 #     + str(np.count_nonzero(mask_object))
@@ -166,7 +166,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 #     + "unwrapGLQ_masked.tif",
                 #     (projection*100).astype(np.int16), imagej=True)
                 plt.imsave(
-                    "/Users/oanegros/Documents/screenshots/tmp_unwrapped4/"
+                    "/Users/oanegros/Documents/screenshots/tmp/"
                     + str(t0)
                     + "_"
                     + str(np.count_nonzero(mask_object))
@@ -182,36 +182,56 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 with _condition:  # shtools backend is not thread-safec
                     coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
 
-                pysh.SHCoeffs.from_array(coeffs).plot_spectrum(
-                    show=False,
-                    unit="per_dlogl",
-                    fname="/Users/oanegros/Documents/screenshots/tmp_unwrapped4/"
-                    + str(t0)
-                    + "_spectrum_"
-                    + str(np.count_nonzero(mask_object == 0))
-                    + self.projectionorder[which_proj]
-                    + ".png",
-                )
+                # pysh.SHCoeffs.from_array(coeffs).plot_spectrum(
+                #     show=False,
+                #     unit="per_dlogl",
+                #     fname="/Users/oanegros/Documents/screenshots/tmp_unwrapped4/"
+                #     + str(t0)
+                #     + "_spectrum_"
+                #     + str(np.count_nonzero(mask_object == 0))
+                #     + self.projectionorder[which_proj]
+                #     + ".png",
+                # )
+                # pysh.SHCoeffs.from_array(coeffs).plot_spectrum2d(
+                #     show=False,
+                #     fname="/Users/oanegros/Documents/screenshots/tmp_unwrapped4/"
+                #     + str(t0)
+                #     + "_spectrum2d_"
+                #     + str(np.count_nonzero(mask_object == 0))
+                #     + self.projectionorder[which_proj]
+                #     + ".svg",
+                # )
 
                 power_per_dlogl = spectrum(coeffs, unit="per_dlogl", base=2)
 
-                # bin in 2log spaced bins
-                bins = np.logspace(0, np.log2(len(power_per_dlogl)), num=20, base=2, endpoint=True)
-                bin_ix, current_bin, means = 0, [], []
-                for degree, power in enumerate(power_per_dlogl[1:]):
-                    current_bin.append(power)
-                    if degree + 1 >= bins[bin_ix]:
-                        if len(current_bin) > 0:  # this is for high ratio bins/degrees
-                            means.append(np.mean(current_bin))
-                        bin_ix += 1
-                        current_bin = []
+                # bin higher degrees in 2log spaced bins:
+                bin_ends = np.logspace(
+                    0, np.log2(len(power_per_dlogl) - 1), num=self.reduced_spectrum_length, base=2, endpoint=True
+                ).astype(int)
+                bin_start = np.roll(bin_ends, 1)
+
+                # To ensure n bins, all are separate ('coarse') values until degree >= bin_end
+                # if you bin normally on 2log, from np.argmax((bin_ends - bin_start)>1), you get less bins (or multiple with the same value)
+                avgfrom = np.argmax(bin_ends[1:] - (np.arange(len(bin_ends))[1:]) > 0) + 1
+                if self.reduced_spectrum_length > len(power_per_dlogl):
+                    avgfrom = len(power_per_dlogl)
+                bin_start, bin_ends = bin_start[avgfrom:], bin_ends[avgfrom:]
+                bin_start[0] = max(avgfrom, bin_start[0])
+                means, meanix = [], []
+                for start, end in zip(bin_start, bin_ends):
+                    means.append(np.mean(power_per_dlogl[start:end]))
+                    meanix.append(np.mean([start, end]))
+
+                # print(list(np.arange(avgfrom, dtype=float) + 1) + meanix) # Bin center values
 
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[0] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[0]] = power_per_dlogl[1:9]
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[0]] = power_per_dlogl[1:avgfrom]
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[1] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[1]] = means[8:]
+                    result[
+                        self.projectionorder[which_proj] + " - " + self.scaleorder[1]
+                    ] = means  # 2-log spaced bins at [9, 12, 16, 21, 28, 38, 51, 68, 91, 122, 164, 219]
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[2] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[1]] = power_per_dlogl[9:]
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[2]] = power_per_dlogl[avgfrom:]
 
         t3 = time.time()
         print("time to do full unwrap and expand: \t", t3 - t0)
