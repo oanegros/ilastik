@@ -447,7 +447,7 @@ class ExportFile(object):
         count = 0
         self.ExportProgress(0)
         if mode in ("h5", "hd5", "hdf5"):
-            with h5py.File(self.file_name, "w") as fout:
+            with h5py.File(self.file_name, "w", libver="v108") as fout:
                 for table_name, table in self.table_dict.items():
                     self._make_h5_dataset(
                         fout,
