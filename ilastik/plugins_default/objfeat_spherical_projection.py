@@ -137,7 +137,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
         mask_object = binary_bbox
 
         # TODO reset conditionality here
-        self.raysLUT = self.get_ray_table()
+        if self.raysLUT == None:
+            self.raysLUT = self.get_ray_table()
 
         cube = resize(
             image, (self.scale, self.scale, self.scale), preserve_range=False, order=1
@@ -165,17 +166,17 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 #     + self.projectionorder[which_proj]
                 #     + "unwrapGLQ_masked.tif",
                 #     (projection*100).astype(np.int16), imagej=True)
-                plt.imsave(
-                    "/Users/oanegros/Documents/screenshots/tmp/"
-                    + str(t0)
-                    + "_"
-                    + str(np.count_nonzero(mask_object))
-                    + "_"
-                    + str(np.count_nonzero(mask_object == 0))
-                    + self.projectionorder[which_proj]
-                    + "unwrapGLQ_masked.png",
-                    projection,
-                )
+                # plt.imsave(
+                #     "/Users/oanegros/Documents/screenshots/tmp/"
+                #     + str(t0)
+                #     + "_"
+                #     + str(np.count_nonzero(mask_object))
+                #     + "_"
+                #     + str(np.count_nonzero(mask_object == 0))
+                #     + self.projectionorder[which_proj]
+                #     + "unwrapGLQ_masked.png",
+                #     projection,
+                # )
                 projectedix += 1
 
                 zero, w = pysh.expand.SHGLQ(int(np.pi * self.scale))
@@ -212,11 +213,13 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 # print(list(np.arange(self.n_coarse, dtype=float) + 1) + [np.mean([start,end]) for start, end in zip(self.bin_start, self.bin_ends)])
 
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[0] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[0]] = power[1 : self.n_coarse]
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[0]] = power[1 : self.n_coarse + 1]
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[1] in self.features:
                     result[self.projectionorder[which_proj] + " - " + self.scaleorder[1]] = means
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[2] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[2]] = power[self.n_coarse :]
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[2]] = power[self.n_coarse + 1 :]
+                # print(len( power[1 : self.n_coarse + 1]), len(means), self.n_coarse)
+                # print(self.bin_ends)
 
         t3 = time.time()
         print("time to do full unwrap and expand: \t", t3 - t0)
@@ -258,9 +261,9 @@ class SphericalProjection(ObjectFeaturesPlugin):
     def get_bins(self, veclength):
         # increase bins until self.reduced_spectrum_length is hit with integer bins
         # all linearly scaled bins will be 'coarse features'
-        n_bins = self.reduced_spectrum_length + 1
+        n_bins = self.reduced_spectrum_length
         bins = np.unique(np.logspace(0, np.log2(veclength - 1), num=n_bins, base=2, endpoint=True).astype(int))
-        while len(bins) < self.reduced_spectrum_length + 1:
+        while len(bins) < self.reduced_spectrum_length:
             n_bins += 1
             bins = np.unique(np.logspace(0, np.log2(veclength - 1), num=n_bins, base=2, endpoint=True).astype(int))
 
@@ -304,7 +307,6 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
 @jit(nopython=True)
 def lookup_spherical(img, raysLUT, fineness, projections):
-    print("lookup")
     unwrapped = np.zeros((fineness + 1, fineness * 2 + 1, np.sum(projections)), dtype=np.float64)
     for loc, ray in raysLUT.items():
         # TODO update indexing to "values = img[ray[:,0],ray[:,1],ray[:,2]]" or similar once numba multiple advanced indexing is merged https://github.com/numba/numba/pull/8491
@@ -332,7 +334,6 @@ def lookup_spherical(img, raysLUT, fineness, projections):
             unwrapped[loc[1], loc[0], proj] = np.sum(values) / len(values)
             # unwrapped[loc[1], loc[0], proj] = np.sum(values) / (unwrapped[loc[1], loc[0], proj - 1])
             proj += 1
-    print("done with lookup")
     return unwrapped
 
 
