@@ -202,25 +202,21 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 #     + ".svg",
                 # )
 
-                power_per_dlogl = spectrum(coeffs, unit="per_dlogl", base=2)
+                power = spectrum(coeffs, unit="per_dlogl", base=2)
 
                 # bin higher degrees in 2log spaced bins:
                 if self.n_coarse is None:
-                    self.get_bins(len(power_per_dlogl))
-                means = [np.mean(power_per_dlogl[s:e]) for s, e in zip(self.bin_start, self.bin_ends)]
+                    self.get_bins(len(power))
+                means = [np.mean(power[s:e]) for s, e in zip(self.bin_start, self.bin_ends)]
                 # # Bin center values:
                 # print(list(np.arange(self.n_coarse, dtype=float) + 1) + [np.mean([start,end]) for start, end in zip(self.bin_start, self.bin_ends)])
 
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[0] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[0]] = power_per_dlogl[
-                        1 : self.n_coarse
-                    ]
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[0]] = power[1 : self.n_coarse]
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[1] in self.features:
                     result[self.projectionorder[which_proj] + " - " + self.scaleorder[1]] = means
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[2] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[2]] = power_per_dlogl[
-                        self.n_coarse :
-                    ]
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[2]] = power[self.n_coarse :]
 
         t3 = time.time()
         print("time to do full unwrap and expand: \t", t3 - t0)
@@ -260,22 +256,17 @@ class SphericalProjection(ObjectFeaturesPlugin):
         return
 
     def get_bins(self, veclength):
-        bin_ends = np.logspace(
-            0, np.log2(veclength - 1), num=self.reduced_spectrum_length, base=2, endpoint=True
-        ).astype(int)
-        bin_start = np.roll(bin_ends, 1)
+        # increase bins until self.reduced_spectrum_length is hit with integer bins
+        # all linearly scaled bins will be 'coarse features'
+        n_bins = self.reduced_spectrum_length + 1
+        bins = np.unique(np.logspace(0, np.log2(veclength - 1), num=n_bins, base=2, endpoint=True).astype(int))
+        while len(bins) < self.reduced_spectrum_length + 1:
+            n_bins += 1
+            bins = np.unique(np.logspace(0, np.log2(veclength - 1), num=n_bins, base=2, endpoint=True).astype(int))
 
-        # To ensure n bins, all are separate ('coarse') values until degree >= bin_end
-        # This makes a linear coarse region and a 2log spaced fine region
-        # if you bin normally on 2log, from np.argmax((bin_ends - bin_start)>1), you get less bins (or multiple with the same value)
-        n_coarse = np.argmax(bin_ends[1:] - (np.arange(len(bin_ends))[1:]) > 0) + 1
-        if self.reduced_spectrum_length > veclength:
-            n_coarse = veclength
-        bin_start, bin_ends = bin_start[n_coarse:], bin_ends[n_coarse:]
-        bin_start[0] = max(n_coarse, bin_start[0])
-        self.bin_start = bin_start
-        self.bin_ends = bin_ends
-        self.n_coarse = n_coarse
+        self.n_coarse = np.argmax(bins - (np.arange(len(bins)) + 1) > 0)
+        self.bin_ends = bins[self.n_coarse :]
+        self.bin_start = np.roll(bins, 1)[self.n_coarse :]
         return
 
     def get_ray_table(self):
