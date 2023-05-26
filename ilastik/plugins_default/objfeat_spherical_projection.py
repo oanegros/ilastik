@@ -70,7 +70,13 @@ class SphericalProjection(ObjectFeaturesPlugin):
     margin = 0  # necessary for calling compute_local
 
     # projection order is
-    projectionorder = ["MAX projection", "MIN projection", "SHAPE projection", "MEAN projection"]
+    projectionorder = [
+        "MAX projection",
+        "MIN projection",
+        "SHAPE projection",
+        "MEAN projection",
+        "DIST_TO_MAX projection",
+    ]
     scaleorder = [
         "low degrees",
         "high degrees (undersampled)",
@@ -157,6 +163,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
             if projected:
                 projection = unwrapped[:, :, projectedix].astype(float)
                 # print(self.projectionorder[which_proj], np.max(projection), np.min(projection))
+
+                # TIF SAVE
                 # tifffile.imwrite("/Users/oanegros/Documents/screenshots/tmp/"
                 #     + str(t0)
                 #     + "_"
@@ -166,6 +174,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 #     + self.projectionorder[which_proj]
                 #     + "unwrapGLQ_masked.tif",
                 #     (projection*100).astype(np.int16), imagej=True)
+
+                # PNG SAVE
                 # plt.imsave(
                 #     "/Users/oanegros/Documents/screenshots/tmp/"
                 #     + str(t0)
@@ -177,12 +187,14 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 #     + "unwrapGLQ_masked.png",
                 #     projection,
                 # )
+
                 projectedix += 1
 
                 zero, w = pysh.expand.SHGLQ(int(np.pi * self.scale))
                 with _condition:  # shtools backend is not thread-safec
                     coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
 
+                # 1D Spectrum
                 # pysh.SHCoeffs.from_array(coeffs).plot_spectrum(
                 #     show=False,
                 #     unit="per_dlogl",
@@ -193,6 +205,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 #     + self.projectionorder[which_proj]
                 #     + ".png",
                 # )
+                # 2D spectrum
                 # pysh.SHCoeffs.from_array(coeffs).plot_spectrum2d(
                 #     show=False,
                 #     fname="/Users/oanegros/Documents/screenshots/tmp_unwrapped4/"
@@ -203,7 +216,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 #     + ".svg",
                 # )
 
-                power = spectrum(coeffs, unit="per_dlogl", base=2)
+                power = spectrum(coeffs, unit="per_dlogl", base=2)[1:]
 
                 # bin higher degrees in 2log spaced bins:
                 if self.n_coarse is None:
@@ -213,13 +226,11 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 # print(list(np.arange(self.n_coarse, dtype=float) + 1) + [np.mean([start,end]) for start, end in zip(self.bin_start, self.bin_ends)])
 
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[0] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[0]] = power[1 : self.n_coarse + 1]
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[0]] = power[: self.n_coarse]
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[1] in self.features:
                     result[self.projectionorder[which_proj] + " - " + self.scaleorder[1]] = means
                 if self.projectionorder[which_proj] + " - " + self.scaleorder[2] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[2]] = power[self.n_coarse + 1 :]
-                # print(len( power[1 : self.n_coarse + 1]), len(means), self.n_coarse)
-                # print(self.bin_ends)
+                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[2]] = power[self.n_coarse :]
 
         t3 = time.time()
         print("time to do full unwrap and expand: \t", t3 - t0)
@@ -332,7 +343,11 @@ def lookup_spherical(img, raysLUT, fineness, projections):
             proj += 1
         if projections[3]:  # MEAN
             unwrapped[loc[1], loc[0], proj] = np.sum(values) / len(values)
-            # unwrapped[loc[1], loc[0], proj] = np.sum(values) / (unwrapped[loc[1], loc[0], proj - 1])
+            proj += 1
+        if projections[4]:  # DIST_TO_MAX
+            vec = ray[0].astype(np.float64) - ray[np.argmax(values)].astype(np.float64)
+            vec -= vec < 0  # integer flooring issues
+            unwrapped[loc[1], loc[0], proj] = np.linalg.norm(vec)
             proj += 1
     return unwrapped
 
