@@ -56,6 +56,7 @@ from pathlib import Path
 # temp
 import time
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 
 # TODO this is currently broken, but can be fixed once ilastik python version is bumped
 # pysh.backends.select_preferred_backend(backend='ducc', nthreads=1)
@@ -156,7 +157,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         unwrapped = lookup_spherical(segmented_cube, self.raysLUT, int(np.pi * self.scale), self.projections)
 
         t2 = time.time()
-
+        # print(binary_bbox)
         result = {}
         projectedix = 0
         for which_proj, projected in enumerate(self.projections):
@@ -164,8 +165,22 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 projection = unwrapped[:, :, projectedix].astype(float)
                 # print(self.projectionorder[which_proj], np.max(projection), np.min(projection))
 
-                # TIF SAVE
-                # tifffile.imwrite("/Users/oanegros/Documents/screenshots/tmp/"
+                # # TIF SAVE
+                # saveable = segmented_cube
+                # saveable[saveable == -1] = 0
+                # saveable = (saveable * 255 / np.max(segmented_cube) ).astype(np.uint8)
+                # tifffile.imwrite("/Users/oanegros/Documents/screenshots/tmp_2/"
+                #     + str(t0)
+                #     + "_"
+                #     + str(np.count_nonzero(mask_object))
+                #     + "_"
+                #     + str(np.count_nonzero(mask_object == 0))
+                #     + self.projectionorder[which_proj]
+                #     + "CELL_masked.tif",
+                #     saveable, imagej=True)
+
+                # # TIF SAVE PROJ
+                # tifffile.imwrite("/Users/oanegros/Documents/screenshots/tmp_2/"
                 #     + str(t0)
                 #     + "_"
                 #     + str(np.count_nonzero(mask_object))
@@ -173,11 +188,11 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 #     + str(np.count_nonzero(mask_object == 0))
                 #     + self.projectionorder[which_proj]
                 #     + "unwrapGLQ_masked.tif",
-                #     (projection*100).astype(np.int16), imagej=True)
+                #     (projection * 255 / np.max(projection) ).astype(np.uint8), imagej=True)
 
-                # PNG SAVE
+                # # PNG SAVE
                 # plt.imsave(
-                #     "/Users/oanegros/Documents/screenshots/tmp/"
+                #     "/Users/oanegros/Documents/screenshots/tmp_2/"
                 #     + str(t0)
                 #     + "_"
                 #     + str(np.count_nonzero(mask_object))
@@ -194,29 +209,46 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 with _condition:  # shtools backend is not thread-safec
                     coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
 
-                # 1D Spectrum
+                # # 1D Spectrum
                 # pysh.SHCoeffs.from_array(coeffs).plot_spectrum(
                 #     show=False,
                 #     unit="per_dlogl",
-                #     fname="/Users/oanegros/Documents/screenshots/tmp_unwrapped4/"
+                #     fname="/Users/oanegros/Documents/screenshots/tmp_2/"
                 #     + str(t0)
                 #     + "_spectrum_"
                 #     + str(np.count_nonzero(mask_object == 0))
                 #     + self.projectionorder[which_proj]
-                #     + ".png",
+                #     + ".svg",
                 # )
-                # 2D spectrum
+                # # 2D spectrum
                 # pysh.SHCoeffs.from_array(coeffs).plot_spectrum2d(
                 #     show=False,
-                #     fname="/Users/oanegros/Documents/screenshots/tmp_unwrapped4/"
+                #     fname="/Users/oanegros/Documents/screenshots/tmp_2/"
                 #     + str(t0)
                 #     + "_spectrum2d_"
                 #     + str(np.count_nonzero(mask_object == 0))
                 #     + self.projectionorder[which_proj]
-                #     + ".svg",
+                #     + ".png",
                 # )
 
                 power = spectrum(coeffs, unit="per_dlogl", base=2)[1:]
+
+                # new_rc_params = {'text.usetex': False,
+                #     "svg.fonttype": 'none'
+                # }
+                # mpl.rcParams.update(new_rc_params)
+                # f, ax = plt.subplots(figsize=(7, 7))
+                # ax.set_xscale('log', base=2)
+                # ax.set_yscale('log', base=2)
+                # ax.plot(np.arange(1,251),power[1:])
+                # plt.savefig(
+                #     fname="/Users/oanegros/Documents/screenshots/tmp_2/"
+                #     + str(t0)
+                #     + "_spectrum_"
+                #     + str(np.count_nonzero(mask_object == 0))
+                #     + self.projectionorder[which_proj]
+                #     + ".svg"
+                # )
 
                 # bin higher degrees in 2log spaced bins:
                 if self.n_coarse is None:
@@ -250,8 +282,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
         self.features = features
         orig_bbox = binary_bbox
 
-        np.nonzero(orig_bbox)
         margin = [(np.min(dim), np.max(dim) + 1) for dim in np.nonzero(binary_bbox)]
+
         image = image[margin[0][0] : margin[0][1], margin[1][0] : margin[1][1], margin[2][0] : margin[2][1]]
         binary_bbox = binary_bbox[margin[0][0] : margin[0][1], margin[1][0] : margin[1][1], margin[2][0] : margin[2][1]]
 
