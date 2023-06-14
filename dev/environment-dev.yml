@@ -38,14 +38,17 @@ dependencies:
   # tiffile >2020.9.22,<=2021.11.2
   - tifffile
   # build 1.11.1=*_1028 on cf is the first to be compatible with numpy>1.19
-  # need to bump this manually until there is a true version bump in vigra
-  - vigra 1.11.1=*_1033
+  # need to bump this manually until there is a true version bump in vigra 
+  # WARNING: REMOVED BUILD NR FOR SH DEPENDENCIES
+  - vigra 
   - xarray
   - z5py
+
+  # Spherical harmonics dependencies
   - pyshtools 
-  - blosc <=1.21.0
+  - blosc <=1.21.0 # not sure if necessary
   - numba
-  - ducc0
+  - ducc0 # not necessary until python version bump
 
   # Neural Network Workflow dependencies
   # can be changed to request gpu versions
