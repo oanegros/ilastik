@@ -36,7 +36,7 @@ import vigra
 import logging
 import numpy as np
 
-# transformations and speedup
+# fourier transformations and speedup
 from numba import jit, typeof, typed, types
 from skimage.transform import resize
 from skimage.filters import gaussian
@@ -45,6 +45,7 @@ import pyshtools as pysh
 from pyshtools.shtools import GLQGridCoord
 from pyshtools.expand import SHExpandGLQ
 from pyshtools.spectralanalysis import spectrum
+import scipy
 
 import threading
 import tifffile
@@ -70,7 +71,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
     ndim = None
     margin = 0  # necessary for calling compute_local
 
-    # projection order is
+    # projection order is index in project_()
     projectionorder = [
         "MAX projection",
         "MIN projection",
@@ -78,7 +79,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         "MEAN projection",
         "DIST_TO_MAX projection",
     ]
-    scaleorder = [
+    detailorder = [
         "low degrees",
         "high degrees (undersampled)",
         "high degrees",
@@ -88,20 +89,21 @@ class SphericalProjection(ObjectFeaturesPlugin):
     features = None
     raysLUT = None
     bin_start, bin_ends, n_coarse = None, None, None
+    ndim = 0
 
     # Hyperparameters
     scale = 80  # transforms to cube of size scale by scale by scale
     reduced_spectrum_length = 20  # length of coarse + fine details (averaged)
 
     def availableFeatures(self, image, labels):
-
-        if labels.ndim != 3:
+        if labels.ndim < 2 or labels.ndim > 3:
             return {}
+        self.ndim = labels.ndim
 
         names = []
         result = {}
         for proj in self.projectionorder:
-            for ix, scale in enumerate(self.scaleorder):
+            for ix, scale in enumerate(self.detailorder):
                 name = proj + " - " + scale
                 result[name] = {}
 
@@ -115,22 +117,23 @@ class SphericalProjection(ObjectFeaturesPlugin):
         # fill in the detailed information about the features.
         # features should be a dict with the feature_name as key.
         # NOTE, this function needs to be updated every time skeleton features change
-        scaleorder = ["low degrees", "high degrees (undersampled)", "high degrees"]
+        detailorder = ["low degrees", "high degrees (undersampled)", "high degrees"]
+        # detailorder needs to be the same as self.detailorder, but cannot inherit due to architectural issues
         for name, feature in features.items():
             proj, scl = [part.strip() for part in name.split("-")]
             feature["group"] = proj
             feature["margin"] = 0
-            if scl == scaleorder[0]:
+            if scl == detailorder[0]:
                 feature["displaytext"] = proj + " coarse details"
                 feature[
                     "detailtext"
                 ] = f"Spherical harmonic degrees up to n of a {proj} spherical projection of the data"
-            if scl == scaleorder[1]:
+            if scl == detailorder[1]:
                 feature["displaytext"] = proj + " fine details (averaged)"
                 feature[
                     "detailtext"
                 ] = f"Log2 undersampled spherical harmonic degrees from n of a {proj} spherical projection of the data"
-            if scl == scaleorder[2]:
+            if scl == detailorder[2]:
                 feature["displaytext"] = proj + " fine details (all)"
                 feature[
                     "detailtext"
@@ -138,131 +141,72 @@ class SphericalProjection(ObjectFeaturesPlugin):
         return features
 
     def unwrap_and_expand(self, image, binary_bbox, axes, features):
-
         t0 = time.time()
         rawbbox = image
         mask_object = binary_bbox
 
-        # TODO reset conditionality here
+        print(image.shape)
         if self.raysLUT == None:
-            self.raysLUT = self.get_ray_table()
+            self.raysLUT = self.get_ray_table(self.ndim)
+        # assert(len(next(iter(self.raysLUT))) == len(image.shape)-1) # switching dims is unsupported, but this to check
 
+        # resizing of data is also done for 2D to make the code less convoluted
         cube = resize(
             image, (self.scale, self.scale, self.scale), preserve_range=False, order=1
         )  # this normalizes the data
-        mask_cube = resize(img_as_bool(mask_object), (self.scale, self.scale, self.scale), order=0)
+        mask_cube = resize(img_as_bool(mask_object), tuple([self.scale] * len(image.shape)), order=0)
         segmented_cube = np.where(mask_cube, cube, -1)
         t1 = time.time()
 
-        unwrapped = lookup_spherical(segmented_cube, self.raysLUT, int(np.pi * self.scale), self.projections)
+        # print(image.shape)
+        unwrapped = lookup(segmented_cube, self.raysLUT, int(np.pi * self.scale), self.projections)
 
         t2 = time.time()
-        # print(binary_bbox)
+
         result = {}
         projectedix = 0
-        for which_proj, projected in enumerate(self.projections):
-            if projected:
-                projection = unwrapped[:, :, projectedix].astype(float)
-                # print(self.projectionorder[which_proj], np.max(projection), np.min(projection))
+        used_projections = [which_proj for which_proj, projected in enumerate(self.projections) if projected]
+        for projectedix, projection in enumerate(unwrapped):
+            which_proj = self.projectionorder[used_projections[projectedix]]
 
-                # # TIF SAVE
-                # saveable = segmented_cube
-                # saveable[saveable == -1] = 0
-                # saveable = (saveable * 255 / np.max(segmented_cube) ).astype(np.uint8)
-                # tifffile.imwrite("/Users/oanegros/Documents/screenshots/tmp_2/"
-                #     + str(t0)
-                #     + "_"
-                #     + str(np.count_nonzero(mask_object))
-                #     + "_"
-                #     + str(np.count_nonzero(mask_object == 0))
-                #     + self.projectionorder[which_proj]
-                #     + "CELL_masked.tif",
-                #     saveable, imagej=True)
-
-                # # TIF SAVE PROJ
-                # tifffile.imwrite("/Users/oanegros/Documents/screenshots/tmp_2/"
-                #     + str(t0)
-                #     + "_"
-                #     + str(np.count_nonzero(mask_object))
-                #     + "_"
-                #     + str(np.count_nonzero(mask_object == 0))
-                #     + self.projectionorder[which_proj]
-                #     + "unwrapGLQ_masked.tif",
-                #     (projection * 255 / np.max(projection) ).astype(np.uint8), imagej=True)
-
-                # # PNG SAVE
-                # plt.imsave(
-                #     "/Users/oanegros/Documents/screenshots/tmp_2/"
-                #     + str(t0)
-                #     + "_"
-                #     + str(np.count_nonzero(mask_object))
-                #     + "_"
-                #     + str(np.count_nonzero(mask_object == 0))
-                #     + self.projectionorder[which_proj]
-                #     + "unwrapGLQ_masked.png",
-                #     projection,
-                # )
-
-                projectedix += 1
-
+            projectedix += 1
+            if self.ndim == 2:
+                projection = projection[0, : int(self.scale * np.pi)]
+                power = np.abs(scipy.fft.fft(projection))
+            else:
                 zero, w = pysh.expand.SHGLQ(int(np.pi * self.scale))
-                with _condition:  # shtools backend is not thread-safec
+                with _condition:  # shtools backend is not thread-safe, switch to ducc in future see issue #385 in shtools
                     coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
-
-                # # 1D Spectrum
-                # pysh.SHCoeffs.from_array(coeffs).plot_spectrum(
-                #     show=False,
-                #     unit="per_dlogl",
-                #     fname="/Users/oanegros/Documents/screenshots/tmp_2/"
-                #     + str(t0)
-                #     + "_spectrum_"
-                #     + str(np.count_nonzero(mask_object == 0))
-                #     + self.projectionorder[which_proj]
-                #     + ".svg",
-                # )
-                # # 2D spectrum
-                # pysh.SHCoeffs.from_array(coeffs).plot_spectrum2d(
-                #     show=False,
-                #     fname="/Users/oanegros/Documents/screenshots/tmp_2/"
-                #     + str(t0)
-                #     + "_spectrum2d_"
-                #     + str(np.count_nonzero(mask_object == 0))
-                #     + self.projectionorder[which_proj]
-                #     + ".png",
-                # )
-
                 power = spectrum(coeffs, unit="per_dlogl", base=2)[1:]
+            # PNG SAVE
+            # print(projection)
+            # plt.imsave(
+            #     "/Users/oanegros/Documents/screenshots/tmp_2/"
+            #     + str(t0)
+            #     + "_"
+            #     + str(np.count_nonzero(mask_object))
+            #     + "_"
+            #     + str(np.count_nonzero(mask_object == 0))
+            #     + which_proj
+            #     + "unwrapGLQ_masked.png",
+            #     resize(
+            #         projection, (int(np.pi * self.scale) + 1, int(np.pi * self.scale) * 2 + 1), preserve_range=True, order=0
+            #     ) ,
+            # )
 
-                # new_rc_params = {'text.usetex': False,
-                #     "svg.fonttype": 'none'
-                # }
-                # mpl.rcParams.update(new_rc_params)
-                # f, ax = plt.subplots(figsize=(7, 7))
-                # ax.set_xscale('log', base=2)
-                # ax.set_yscale('log', base=2)
-                # ax.plot(np.arange(1,251),power[1:])
-                # plt.savefig(
-                #     fname="/Users/oanegros/Documents/screenshots/tmp_2/"
-                #     + str(t0)
-                #     + "_spectrum_"
-                #     + str(np.count_nonzero(mask_object == 0))
-                #     + self.projectionorder[which_proj]
-                #     + ".svg"
-                # )
+            # bin higher degrees in 2log spaced bins:
+            if self.n_coarse is None:
+                self.get_bins(len(power))
+            means = [np.mean(power[s:e]) for s, e in zip(self.bin_start, self.bin_ends)]
+            # # Bin center values:
+            # print(list(np.arange(self.n_coarse, dtype=float) + 1) + [np.mean([start,end]) for start, end in zip(self.bin_start, self.bin_ends)])
 
-                # bin higher degrees in 2log spaced bins:
-                if self.n_coarse is None:
-                    self.get_bins(len(power))
-                means = [np.mean(power[s:e]) for s, e in zip(self.bin_start, self.bin_ends)]
-                # # Bin center values:
-                # print(list(np.arange(self.n_coarse, dtype=float) + 1) + [np.mean([start,end]) for start, end in zip(self.bin_start, self.bin_ends)])
-
-                if self.projectionorder[which_proj] + " - " + self.scaleorder[0] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[0]] = power[: self.n_coarse]
-                if self.projectionorder[which_proj] + " - " + self.scaleorder[1] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[1]] = means
-                if self.projectionorder[which_proj] + " - " + self.scaleorder[2] in self.features:
-                    result[self.projectionorder[which_proj] + " - " + self.scaleorder[2]] = power[self.n_coarse :]
+            if which_proj + " - " + self.detailorder[0] in self.features:
+                result[which_proj + " - " + self.detailorder[0]] = power[: self.n_coarse]
+            if which_proj + " - " + self.detailorder[1] in self.features:
+                result[which_proj + " - " + self.detailorder[1]] = means
+            if which_proj + " - " + self.detailorder[2] in self.features:
+                result[which_proj + " - " + self.detailorder[2]] = power[self.n_coarse :]
 
         t3 = time.time()
         print("time to do full unwrap and expand: \t", t3 - t0)
@@ -290,14 +234,13 @@ class SphericalProjection(ObjectFeaturesPlugin):
         assert np.sum(orig_bbox) - np.sum(binary_bbox) == 0
         return self.do_channels(self._do_3d, image, binary_bbox=binary_bbox, features=features, axes=axes)
 
-    def save_ray_table(self, rays):
+    def save_ray_table(self, fname, rays):
         # save a pickle of the rayLUT, requires retyping of the dictionary
         # this is because the rays are ragged, and not single-length
         outLUT = {}  # need to un-type the dictionary for pickling
         for k, v in rays.items():
             outLUT[k] = v
-        name = "sphericalLUT" + str(self.scale) + ".pickle"
-        with open(Path(__file__).parent / name, "wb") as ofs:
+        with open(Path(__file__).parent / fname, "wb") as ofs:
             pickle.dump(outLUT, ofs, protocol=pickle.HIGHEST_PROTOCOL)
         return
 
@@ -315,13 +258,13 @@ class SphericalProjection(ObjectFeaturesPlugin):
         self.bin_start = np.roll(bins, 1)[self.n_coarse :]
         return
 
-    def get_ray_table(self):
+    def get_ray_table(self, ndim):
         # try to load or generate new
         # loading requires retyping of the dictionary for numba, which slows it down (see: https://github.com/numba/numba/issues/8797)
+        fname = f"sphericalLUT{self.scale}_{ndim}D.pickle"
         try:
             t0 = time.time()
-            name = "sphericalLUT" + str(self.scale) + ".pickle"
-            with open(Path(__file__).parent / name, "rb") as handle:
+            with open(Path(__file__).parent / fname, "rb") as handle:
                 newLUT = pickle.load(handle)
             typed_rays = typed.Dict.empty(
                 key_type=typeof((1, 1)),
@@ -338,8 +281,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 key_type=typeof((1, 1)),
                 value_type=typeof(np.zeros((1, 3), dtype=np.int32)),
             )
-            fill_ray_table(self.scale, GLQGridCoord(int(np.pi * self.scale)), rays)
-            self.save_ray_table(rays)
+            fill_ray_table(self.scale, GLQGridCoord(int(np.pi * self.scale)), rays, ndim)
+            self.save_ray_table(fname, rays)
             t1 = time.time()
             print("time to make ray table: ", t1 - t0)
             return rays
@@ -347,51 +290,64 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
 # All numba-accelerated functions cannot receive self, so are not class functions
 
-
+# NOTE: lookup_spherical and lookup_circle are only split because fancy indexing is unsupported in numba
+# and i wanted to avoid checking ndim fore each indexed voxel
 @jit(nopython=True)
-def lookup_spherical(img, raysLUT, fineness, projections):
-    unwrapped = np.zeros((fineness + 1, fineness * 2 + 1, np.sum(projections)), dtype=np.float64)
+def lookup(img, raysLUT, fineness, projections):
+    unwrapped = np.zeros((np.sum(projections), fineness + 1, fineness * 2 + 1), dtype=np.float64)
     for loc, ray in raysLUT.items():
         # TODO update indexing to "values = img[ray[:,0],ray[:,1],ray[:,2]]" or similar once numba multiple advanced indexing is merged https://github.com/numba/numba/pull/8491
         values = np.zeros(ray.shape[0])
         for ix, voxel in enumerate(ray):
             values[ix] = img[voxel[0], voxel[1], voxel[2]]
+
             if values[ix] < 0:  # quit when outside of object mask -  all outside of mask are set to -1
                 if ix != 0:  # centroid is not outside of mask
                     values = values[:ix]
                     break
         proj = 0
         ray = ray.astype(np.float64)
-        if projections[0]:  # MAX
-            unwrapped[loc[1], loc[0], proj] = np.amax(values)
-            proj += 1
-        if projections[1]:  # MIN
-            unwrapped[loc[1], loc[0], proj] = np.amin(values)
-            proj += 1
-        if projections[2]:  # SHAPE
-            vec = ray[0].astype(np.float64) - ray[len(values) - 1].astype(np.float64)
-            vec -= vec < 0  # integer flooring issues
-            unwrapped[loc[1], loc[0], proj] = np.linalg.norm(vec)
-            proj += 1
-        if projections[3]:  # MEAN
-            unwrapped[loc[1], loc[0], proj] = np.sum(values) / len(values)
-            proj += 1
-        if projections[4]:  # DIST_TO_MAX
-            vec = ray[0].astype(np.float64) - ray[np.argmax(values)].astype(np.float64)
-            vec -= vec < 0  # integer flooring issues
-            unwrapped[loc[1], loc[0], proj] = np.linalg.norm(vec)
-            proj += 1
+        unwrapped[:, loc[1], loc[0]] = project_(ray, values, projections)
     return unwrapped
+
+
+@jit(nopython=True)
+def project_(ray, values, projections):
+    vals = np.zeros(np.sum(projections), dtype=np.float64)
+    proj = 0
+    if projections[0]:  # MAX
+        vals[proj] = np.amax(values)
+        proj += 1
+    if projections[1]:  # MIN
+        vals[proj] = np.amin(values)
+        proj += 1
+    if projections[2]:  # SHAPE
+        vec = ray[0].astype(np.float64) - ray[len(values) - 1].astype(np.float64)
+        vec -= vec < 0  # integer flooring issues
+        vals[proj] = np.linalg.norm(vec)
+        proj += 1
+    if projections[3]:  # MEAN
+        vals[proj] = np.sum(values) / len(values)
+        proj += 1
+    if projections[4]:  # DIST_TO_MAX
+        vec = ray[0].astype(np.float64) - ray[np.argmax(values)].astype(np.float64)
+        vec -= vec < 0  # integer flooring issues
+        vals[proj] = np.linalg.norm(vec)
+        proj += 1
+    return vals
 
 
 # ---- only used in generating LUT ----
 
 
 @jit(nopython=True)
-def fill_ray_table(scale, GLQcoords, rays):
+def fill_ray_table(scale, GLQcoords, rays, ndim):
     centroid = np.array([scale, scale, scale], dtype=np.float32) / 2.0
-    # centroid += 0.01 # slightly offset to reduce float rounding errors at the border
-    glq_lat, glq_lon = np.deg2rad(GLQcoords[0]), np.deg2rad(GLQcoords[1])
+    if ndim == 2:
+        glq_lon = np.linspace(0, 2 * np.pi, int(scale * np.pi))
+        glq_lat = np.array([0.0])
+    else:
+        glq_lat, glq_lon = np.deg2rad(GLQcoords[0]), np.deg2rad(GLQcoords[1])
 
     for phi_ix, lon in enumerate(glq_lon):
         for theta_ix, lat in enumerate(glq_lat):
@@ -402,6 +358,7 @@ def fill_ray_table(scale, GLQcoords, rays):
                     np.cos((np.pi / 2) - lat),
                 ]
             )
+
             pixels = march(ray, centroid, scale, marchlen=0.003).astype(np.int32).copy()
 
             # find unique pixels and keep order
@@ -416,6 +373,7 @@ def fill_ray_table(scale, GLQcoords, rays):
                 unique_pixels[ix + 1, :] = pixels[val + 1]
 
             rays[(phi_ix, theta_ix)] = unique_pixels
+
     return rays
 
 
@@ -450,3 +408,84 @@ def isect_dist_line_plane(centroid, raydir, planepoint, planenormal, epsilon=1e-
         if fac > 0:
             return fac
     return np.inf  # parallel ray and plane
+
+
+# print(self.projectionorder[which_proj], np.max(projection), np.min(projection))
+
+# # TIF SAVE
+# saveable = segmented_cube
+# saveable[saveable == -1] = 0
+# saveable = (saveable * 255 / np.max(segmented_cube) ).astype(np.uint8)
+# tifffile.imwrite("/Users/oanegros/Documents/screenshots/tmp_2/"
+#     + str(t0)
+#     + "_"
+#     + str(np.count_nonzero(mask_object))
+#     + "_"
+#     + str(np.count_nonzero(mask_object == 0))
+#     + self.projectionorder[which_proj]
+#     + "CELL_masked.tif",
+#     saveable, imagej=True)
+
+# # TIF SAVE PROJ
+# tifffile.imwrite("/Users/oanegros/Documents/screenshots/tmp_2/"
+#     + str(t0)
+#     + "_"
+#     + str(np.count_nonzero(mask_object))
+#     + "_"
+#     + str(np.count_nonzero(mask_object == 0))
+#     + self.projectionorder[which_proj]
+#     + "unwrapGLQ_masked.tif",
+#     (projection * 255 / np.max(projection) ).astype(np.uint8), imagej=True)
+
+# # PNG SAVE
+# plt.imsave(
+#     "/Users/oanegros/Documents/screenshots/tmp_2/"
+#     + str(t0)
+#     + "_"
+#     + str(np.count_nonzero(mask_object))
+#     + "_"
+#     + str(np.count_nonzero(mask_object == 0))
+#     + self.projectionorder[which_proj]
+#     + "unwrapGLQ_masked.png",
+#     projection,
+# )
+
+# # 1D Spectrum
+# pysh.SHCoeffs.from_array(coeffs).plot_spectrum(
+#     show=False,
+#     unit="per_dlogl",
+#     fname="/Users/oanegros/Documents/screenshots/tmp_2/"
+#     + str(t0)
+#     + "_spectrum_"
+#     + str(np.count_nonzero(mask_object == 0))
+#     + self.projectionorder[which_proj]
+#     + ".svg",
+# )
+# # 2D spectrum
+# pysh.SHCoeffs.from_array(coeffs).plot_spectrum2d(
+#     show=False,
+#     fname="/Users/oanegros/Documents/screenshots/tmp_2/"
+#     + str(t0)
+#     + "_spectrum2d_"
+#     + str(np.count_nonzero(mask_object == 0))
+#     + self.projectionorder[which_proj]
+#     + ".png",
+# )
+
+
+# new_rc_params = {'text.usetex': False,
+#     "svg.fonttype": 'none'
+# }
+# mpl.rcParams.update(new_rc_params)
+# f, ax = plt.subplots(figsize=(7, 7))
+# ax.set_xscale('log', base=2)
+# ax.set_yscale('log', base=2)
+# ax.plot(np.arange(1,251),power[1:])
+# plt.savefig(
+#     fname="/Users/oanegros/Documents/screenshots/tmp_2/"
+#     + str(t0)
+#     + "_spectrum_"
+#     + str(np.count_nonzero(mask_object == 0))
+#     + self.projectionorder[which_proj]
+#     + ".svg"
+# )
