@@ -49,7 +49,7 @@ dependencies:
   - pyshtools 
   # - blosc <=1.21.0 # not sure if necessary
   - numba
-  - ducc0 # not necessary until python version bump
+
 
   # Neural Network Workflow dependencies
   # can be changed to request gpu versions
