@@ -13,7 +13,7 @@ dependencies:
   - future
   - greenlet
   - grpcio 1.41.*
-  - grpcio-tools 1.41.*
+  # - grpcio-tools 1.41.*
   - h5py
   - hytra
   - ilastik-feature-selection
@@ -28,9 +28,9 @@ dependencies:
   - pandas <2
   - psutil
   - pyopengl
-  - pyqt 5.12.*
+  - pyqt 5.15.*
   - pyqtgraph
-  - pytiff
+  
   - python-elf
   - qimage2ndarray
   - scikit-image
@@ -41,19 +41,20 @@ dependencies:
   # build 1.11.1=*_1028 on cf is the first to be compatible with numpy>1.19
   # need to bump this manually until there is a true version bump in vigra 
   # DECREMENTED FOR SH DEP
-  - vigra 1.11.1=*_1032
+  # - vigra 1.11.1=*_1032
+  - vigra
   - xarray
   - z5py
 
   # Spherical harmonics dependencies
   - pyshtools 
-  - blosc <=1.21.0 # not sure if necessary
+  # - blosc <=1.21.0 # not sure if necessary
   - numba
   - ducc0 # not necessary until python version bump
 
   # Neural Network Workflow dependencies
   # can be changed to request gpu versions
-  - pytorch 1.13.* *cpu*
+  - pytorch
 
   - cpuonly
   # - pytorch 1.9.*=*cu*

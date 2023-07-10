@@ -42,7 +42,7 @@ from skimage.transform import resize
 from skimage.filters import gaussian
 from skimage import img_as_bool
 import pyshtools as pysh
-from pyshtools.shtools import GLQGridCoord
+from pyshtools.backends.shtools import GLQGridCoord
 from pyshtools.expand import SHExpandGLQ
 from pyshtools.spectralanalysis import spectrum
 import scipy
