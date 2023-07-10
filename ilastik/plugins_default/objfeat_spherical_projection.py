@@ -59,9 +59,6 @@ import time
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 
-# TODO this is currently broken, but can be fixed once ilastik python version is bumped
-# pysh.backends.select_preferred_backend(backend='ducc', nthreads=1)
-
 logger = logging.getLogger(__name__)
 
 _condition = threading.RLock()
@@ -209,7 +206,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 result[which_proj + " - " + self.detailorder[2]] = power[self.n_coarse :]
 
         t3 = time.time()
-        print("time to do full unwrap and expand: \t", t3 - t0)
+        print("time to do full unwrap and expand: \t", t3 - t2)
         return result
 
     def _do_3d(self, image, binary_bbox, features, axes):
