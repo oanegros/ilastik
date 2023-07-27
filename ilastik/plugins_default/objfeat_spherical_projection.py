@@ -46,6 +46,7 @@ from pyshtools.backends.shtools import GLQGridCoord
 from pyshtools.expand import SHExpandGLQ
 from pyshtools.spectralanalysis import spectrum
 import scipy
+import ducc0
 
 import threading
 import tifffile
@@ -61,7 +62,8 @@ import matplotlib as mpl
 
 logger = logging.getLogger(__name__)
 
-_condition = threading.RLock()
+# _condition = threading.RLock()
+pysh.backends.select_preferred_backend(backend="ducc", nthreads=10)
 
 
 class SphericalProjection(ObjectFeaturesPlugin):
@@ -142,7 +144,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
         rawbbox = image
         mask_object = binary_bbox
 
-        print(image.shape)
+        # print(image.shape)
+        # print(str(t0)+ "_"+ str(np.count_nonzero(mask_object)), image.shape)
         if self.raysLUT == None:
             self.raysLUT = self.get_ray_table(self.ndim)
         # assert(len(next(iter(self.raysLUT))) == len(image.shape)-1) # switching dims is unsupported, but this to check
@@ -151,6 +154,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         cube = resize(
             image, (self.scale, self.scale, self.scale), preserve_range=False, order=1
         )  # this normalizes the data
+        cube = cube * 65536
         mask_cube = resize(img_as_bool(mask_object), tuple([self.scale] * len(image.shape)), order=0)
         segmented_cube = np.where(mask_cube, cube, -1)
         t1 = time.time()
@@ -159,6 +163,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
         unwrapped = lookup(segmented_cube, self.raysLUT, int(np.pi * self.scale), self.projections)
 
         t2 = time.time()
+
+        # self.save_tifs(rawbbox, mask_object, segmented_cube, t0)
 
         result = {}
         projectedix = 0
@@ -172,24 +178,11 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 power = np.abs(scipy.fft.fft(projection))
             else:
                 zero, w = pysh.expand.SHGLQ(int(np.pi * self.scale))
-                with _condition:  # shtools backend is not thread-safe, switch to ducc in future see issue #385 in shtools
-                    coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
+                # with _condition:  # shtools backend is not thread-safe, switch to ducc in future see issue #385 in shtools
+                coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
                 power = spectrum(coeffs, unit="per_dlogl", base=2)[1:]
-            # PNG SAVE
-            # print(projection)
-            # plt.imsave(
-            #     "/Users/oanegros/Documents/screenshots/tmp_2/"
-            #     + str(t0)
-            #     + "_"
-            #     + str(np.count_nonzero(mask_object))
-            #     + "_"
-            #     + str(np.count_nonzero(mask_object == 0))
-            #     + which_proj
-            #     + "unwrapGLQ_masked.png",
-            #     resize(
-            #         projection, (int(np.pi * self.scale) + 1, int(np.pi * self.scale) * 2 + 1), preserve_range=True, order=0
-            #     ) ,
-            # )
+
+            # self.save_prjs(which_proj, spectrum, coeffs, projection, t0, mask_object)
 
             # bin higher degrees in 2log spaced bins:
             if self.n_coarse is None:
@@ -206,7 +199,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 result[which_proj + " - " + self.detailorder[2]] = power[self.n_coarse :]
 
         t3 = time.time()
-        print("time to do full unwrap and expand: \t", t3 - t2)
+        print("time to do full unwrap and expand: \t", t3 - t0)
         return result
 
     def _do_3d(self, image, binary_bbox, features, axes):
@@ -284,6 +277,82 @@ class SphericalProjection(ObjectFeaturesPlugin):
             print("time to make ray table: ", t1 - t0)
             return rays
 
+    def save_tifs(self, rawbbox, mask_object, segmented_cube, t0):
+        # TIF SAVE
+        saveable = segmented_cube
+        saveable[saveable == -1] = 0
+        saveable = (saveable * 255 / np.max(segmented_cube)).astype(np.uint8)
+        tifffile.imwrite(
+            "/Users/oanegros/Documents/screenshots/tmp/"
+            + str(t0)
+            + "_"
+            + str(np.count_nonzero(mask_object))
+            + "_"
+            + str(np.count_nonzero(mask_object == 0))
+            + "CELL_masked.tif",
+            saveable,
+            imagej=True,
+            metadata={"axes": "zyx"},
+        )
+
+        saveable = rawbbox
+        saveable = np.where(mask_object, rawbbox, 0)
+        tifffile.imwrite(
+            "/Users/oanegros/Documents/screenshots/tmp/"
+            + str(t0)
+            + "_"
+            + str(np.count_nonzero(mask_object))
+            + "_"
+            + str(np.count_nonzero(mask_object == 0))
+            + "CELL_small_masked.tif",
+            saveable,
+            imagej=True,
+            metadata={"axes": "zyx"},
+        )
+        return
+
+    def save_prjs(self, which_proj, spectrum, coeffs, projection, t0, mask_object):
+        # PNG SAVE
+        # print(projection)
+        plt.imsave(
+            "/Users/oanegros/Documents/screenshots/tmp/"
+            + str(t0)
+            + "_"
+            + str(np.count_nonzero(mask_object))
+            + "_"
+            + str(np.count_nonzero(mask_object == 0))
+            + which_proj
+            + "unwrapGLQ_masked.png",
+            resize(
+                projection, (int(np.pi * self.scale) + 1, int(np.pi * self.scale) * 2 + 1), preserve_range=True, order=0
+            ),
+        )
+        # # 1D Spectrum
+        pysh.SHCoeffs.from_array(coeffs).to_file(
+            "/Users/oanegros/Documents/screenshots/tmp/"
+            + str(t0)
+            + "_coeffs_"
+            + str(np.count_nonzero(mask_object == 0))
+            + which_proj
+            + ".shtools",
+        )
+
+        # TIF SAVE PROJ
+        projection = 65535 * ((projection - np.min(projection)) / (np.max(projection) - np.min(projection)))
+        tifffile.imwrite(
+            "/Users/oanegros/Documents/screenshots/tmp/"
+            + str(t0)
+            + "_"
+            + str(np.count_nonzero(mask_object))
+            + "_"
+            + str(np.count_nonzero(mask_object == 0))
+            + which_proj
+            + "unwrapGLQ_masked.tif",
+            projection.astype(np.uint16),
+            imagej=True,
+        )
+        return
+
 
 # All numba-accelerated functions cannot receive self, so are not class functions
 
@@ -293,11 +362,9 @@ class SphericalProjection(ObjectFeaturesPlugin):
 def lookup(img, raysLUT, fineness, projections):
     unwrapped = np.zeros((np.sum(projections), fineness + 1, fineness * 2 + 1), dtype=np.float64)
     for loc, ray in raysLUT.items():
-        # TODO update indexing to "values = img[ray[:,0],ray[:,1],ray[:,2]]" or similar once numba multiple advanced indexing is merged https://github.com/numba/numba/pull/8491
         values = np.zeros(ray.shape[0])
         for ix, voxel in enumerate(ray):
             values[ix] = img[voxel[0], voxel[1], voxel[2]]
-
             if values[ix] < 0:  # quit when outside of object mask -  all outside of mask are set to -1
                 if ix != 0:  # centroid is not outside of mask
                     values = values[:ix]
