@@ -63,7 +63,7 @@ import matplotlib as mpl
 logger = logging.getLogger(__name__)
 
 # _condition = threading.RLock()
-pysh.backends.select_preferred_backend(backend="ducc", nthreads=10)
+pysh.backends.select_preferred_backend(backend="ducc", nthreads=5)
 
 
 class SphericalProjection(ObjectFeaturesPlugin):
@@ -151,10 +151,15 @@ class SphericalProjection(ObjectFeaturesPlugin):
         # assert(len(next(iter(self.raysLUT))) == len(image.shape)-1) # switching dims is unsupported, but this to check
 
         # resizing of data is also done for 2D to make the code less convoluted
-        cube = resize(
-            image, (self.scale, self.scale, self.scale), preserve_range=False, order=1
-        )  # this normalizes the data
+        cube = resize(image, (self.scale, self.scale, self.scale), preserve_range=False, order=1)
+        # print(np.max(cube), np.min(cube))
+        minval, maxval = np.min(cube), np.max(cube)
+        if minval != maxval:
+            cube -= minval
+            cube *= 1 / maxval
+        # print(np.max(cube), np.min(cube))
         cube = cube * 65536
+        # print(np.max(cube), np.min(cube))
         mask_cube = resize(img_as_bool(mask_object), tuple([self.scale] * len(image.shape)), order=0)
         segmented_cube = np.where(mask_cube, cube, -1)
         t1 = time.time()
