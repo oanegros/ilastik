@@ -50,6 +50,7 @@ dependencies:
   - pyshtools 
   # - blosc <=1.21.0 # not sure if necessary
   - numba
+  - ducc0
 
 
   # Neural Network Workflow dependencies
