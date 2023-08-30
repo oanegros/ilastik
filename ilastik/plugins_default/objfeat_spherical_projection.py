@@ -147,7 +147,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         # print(image.shape)
         # print(str(t0)+ "_"+ str(np.count_nonzero(mask_object)), image.shape)
         if self.raysLUT == None:
-            self.raysLUT = self.get_ray_table(self.ndim)
+            self.raysLUT = self.get_ray_table(len(image.shape))
         # assert(len(next(iter(self.raysLUT))) == len(image.shape)-1) # switching dims is unsupported, but this to check
 
         # resizing of data is also done for 2D to make the code less convoluted
@@ -193,8 +193,9 @@ class SphericalProjection(ObjectFeaturesPlugin):
             if self.n_coarse is None:
                 self.get_bins(len(power))
             means = [np.mean(power[s:e]) for s, e in zip(self.bin_start, self.bin_ends)]
+            # print(self.bin_start, self.bin_ends, self.n_coarse)
             # # Bin center values:
-            # print(list(np.arange(self.n_coarse, dtype=float) + 1) + [np.mean([start,end]) for start, end in zip(self.bin_start, self.bin_ends)])
+            # print(list(np.arange(0,self.n_coarse, dtype=float) ) + [np.mean([start,end]) for start, end in zip(self.bin_start, self.bin_ends)])
 
             if which_proj + " - " + self.detailorder[0] in self.features:
                 result[which_proj + " - " + self.detailorder[0]] = power[: self.n_coarse]
