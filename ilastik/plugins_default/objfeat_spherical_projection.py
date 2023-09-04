@@ -152,16 +152,23 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
         # resizing of data is also done for 2D to make the code less convoluted
         cube = resize(image, (self.scale, self.scale, self.scale), preserve_range=False, order=1)
-        # print(np.max(cube), np.min(cube))
-        minval, maxval = np.min(cube), np.max(cube)
-        if minval != maxval:
-            cube -= minval
-            cube *= 1 / maxval
-        # print(np.max(cube), np.min(cube))
-        cube = cube * 65536
-        # print(np.max(cube), np.min(cube))
+
         mask_cube = resize(img_as_bool(mask_object), tuple([self.scale] * len(image.shape)), order=0)
         segmented_cube = np.where(mask_cube, cube, -1)
+
+        masked_seg_cube = segmented_cube[segmented_cube > 0]
+        minval = np.quantile(masked_seg_cube, 0.01)
+        maxval = np.quantile(masked_seg_cube, 0.99)
+        masked_seg_cube[masked_seg_cube > maxval] = maxval
+        masked_seg_cube[masked_seg_cube < minval] = minval
+        print(np.max(masked_seg_cube), np.min(masked_seg_cube))
+        if minval != maxval:
+            masked_seg_cube -= minval
+            masked_seg_cube *= 1 / (maxval - minval)
+        segmented_cube[segmented_cube > 0] = masked_seg_cube
+        print(np.max(masked_seg_cube), np.min(masked_seg_cube))
+        print(np.max(segmented_cube), np.min(segmented_cube))
+        masked_seg_cube = masked_seg_cube * 65536
         t1 = time.time()
 
         # print(image.shape)
