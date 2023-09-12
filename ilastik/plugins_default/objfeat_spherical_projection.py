@@ -151,7 +151,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         # assert(len(next(iter(self.raysLUT))) == len(image.shape)-1) # switching dims is unsupported, but this to check
 
         # resizing of data is also done for 2D to make the code less convoluted
-        cube = resize(image, (self.scale, self.scale, self.scale), preserve_range=False, order=1)
+        cube = resize(image, (self.scale, self.scale, self.scale), preserve_range=True, order=1)
 
         mask_cube = resize(img_as_bool(mask_object), tuple([self.scale] * len(image.shape)), order=0)
         segmented_cube = np.where(mask_cube, cube, -1)
@@ -159,9 +159,11 @@ class SphericalProjection(ObjectFeaturesPlugin):
         masked_seg_cube = segmented_cube[segmented_cube > 0]
         minval = np.quantile(masked_seg_cube, 0.01)
         maxval = np.quantile(masked_seg_cube, 0.99)
+        print(maxval, minval)
+        print(np.max(masked_seg_cube), np.min(masked_seg_cube))
         masked_seg_cube[masked_seg_cube > maxval] = maxval
         masked_seg_cube[masked_seg_cube < minval] = minval
-        print(np.max(masked_seg_cube), np.min(masked_seg_cube))
+
         if minval != maxval:
             masked_seg_cube -= minval
             masked_seg_cube *= 1 / (maxval - minval)
@@ -194,7 +196,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
                 power = spectrum(coeffs, unit="per_dlogl", base=2)[1:]
 
-            # self.save_prjs(which_proj, spectrum, coeffs, projection, t0, mask_object)
+            self.save_prjs(which_proj, spectrum, coeffs, projection, t0, mask_object)
 
             # bin higher degrees in 2log spaced bins:
             if self.n_coarse is None:
@@ -338,7 +340,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
     def save_prjs(self, which_proj, spectrum, coeffs, projection, t0, mask_object):
         # PNG SAVE
         # print(projection)
-        plt.imsave(
+        path = (
             "/Users/oanegros/Documents/screenshots/tmp/"
             + str(t0)
             + "_"
@@ -346,35 +348,44 @@ class SphericalProjection(ObjectFeaturesPlugin):
             + "_"
             + str(np.count_nonzero(mask_object == 0))
             + which_proj
-            + "unwrapGLQ_masked.png",
+            + "_{type}.{suffix}"
+        )
+        plt.imsave(
+            path.format(type="project", suffix="png"),
             resize(
                 projection, (int(np.pi * self.scale) + 1, int(np.pi * self.scale) * 2 + 1), preserve_range=True, order=0
             ),
         )
-        # # 1D Spectrum
-        pysh.SHCoeffs.from_array(coeffs).to_file(
-            "/Users/oanegros/Documents/screenshots/tmp/"
-            + str(t0)
-            + "_coeffs_"
-            + str(np.count_nonzero(mask_object == 0))
-            + which_proj
-            + ".shtools",
+        # # SHTOOLS full coeffs
+        # pysh.SHCoeffs.from_array(coeffs).to_file(
+        #     "/Users/oanegros/Documents/screenshots/tmp/"
+        #     + str(t0)
+        #     + "_coeffs_"
+        #     + str(np.count_nonzero(mask_object == 0))
+        #     + which_proj
+        #     + ".shtools",
+        # )
+        # 1D Spectrum
+        pysh.SHCoeffs.from_array(coeffs).plot_spectrum(
+            show=False,
+            unit="per_dlogl",
+            fname=path.format(type="spectrum", suffix="png"),
         )
 
-        # TIF SAVE PROJ
-        projection = 65535 * ((projection - np.min(projection)) / (np.max(projection) - np.min(projection)))
-        tifffile.imwrite(
-            "/Users/oanegros/Documents/screenshots/tmp/"
-            + str(t0)
-            + "_"
-            + str(np.count_nonzero(mask_object))
-            + "_"
-            + str(np.count_nonzero(mask_object == 0))
-            + which_proj
-            + "unwrapGLQ_masked.tif",
-            projection.astype(np.uint16),
-            imagej=True,
-        )
+        # # TIF SAVE PROJ
+        # projection = 65535 * ((projection - np.min(projection)) / (np.max(projection) - np.min(projection)))
+        # tifffile.imwrite(
+        #     "/Users/oanegros/Documents/screenshots/tmp/"
+        #     + str(t0)
+        #     + "_"
+        #     + str(np.count_nonzero(mask_object))
+        #     + "_"
+        #     + str(np.count_nonzero(mask_object == 0))
+        #     + which_proj
+        #     + "unwrapGLQ_masked.tif",
+        #     projection.astype(np.uint16),
+        #     imagej=True,
+        # )
         return
 
 
