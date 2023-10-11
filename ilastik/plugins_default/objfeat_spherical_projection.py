@@ -63,7 +63,7 @@ import matplotlib as mpl
 logger = logging.getLogger(__name__)
 
 # _condition = threading.RLock()
-pysh.backends.select_preferred_backend(backend="ducc", nthreads=5)
+pysh.backends.select_preferred_backend(backend="ducc", nthreads=1)
 
 
 class SphericalProjection(ObjectFeaturesPlugin):
