@@ -63,7 +63,7 @@ import matplotlib as mpl
 logger = logging.getLogger(__name__)
 
 # _condition = threading.RLock()
-pysh.backends.select_preferred_backend(backend="ducc", nthreads=1)
+pysh.backends.select_preferred_backend(backend="ducc", nthreads=5)
 
 
 class SphericalProjection(ObjectFeaturesPlugin):
@@ -214,25 +214,14 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 result[which_proj + " - " + self.detailorder[2]] = power[self.n_coarse :]
 
         t3 = time.time()
-        print("time to do full unwrap and expand: \t", t3 - t2)
+        print("time to do full unwrap and expand: \t", t3 - t0)
         return result
 
     def _do_3d(self, image, binary_bbox, features, axes):
         results = []
         features = list(features.keys())
-        results.append(self.unwrap_and_expand(image, label_bboxes, axes))
+        results.append(self.unwrap_and_expand(image, binary_bbox, axes, features))
         return results[0]
-
-    def init_selection(self, features):
-        for featurename in features:
-            if "resolution" in featurename:
-                self.scale = max(self.scale, int(featurename.split(" ")[-1].split("x")[-1]))
-                self.fineness = int(np.pi * self.scale)
-            else:
-                for ix, proj in enumerate(self.projectionorder):
-                    if proj in featurename:
-                        self.projections[ix] = True
-        return
 
     def compute_local(self, image, binary_bbox, features, axes):
         for feature in features:
@@ -408,25 +397,6 @@ def lookup(img, raysLUT, fineness, projections):
         ray = ray.astype(np.float64)
         unwrapped[:, loc[1], loc[0]] = project_(ray, values, projections)
     return unwrapped
-
-
-# ---- only used in generating LUT ----
-
-
-@jit(nopython=True)
-def fill_ray_table(fineness, scale, rays):
-    # needs helper functions for np.unique and np.all to jit :(
-    dummy = np.zeros((scale, scale, scale), dtype=np.int16)
-    centroid = np.array(dummy.shape, dtype=np.float32) / 2.0
-    pi2range = np.linspace(-0.5 * np.pi, 1.5 * np.pi, fineness * 4)
-    pirange = np.linspace(-1 * np.pi, 0 * np.pi, fineness * 2)
-
-    for phi_ix, phi in enumerate(pi2range):
-        for theta_ix, theta in enumerate(pirange):
-            ray = np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], dtype=np.float64)
-            pixels = nb_unique(march(ray, centroid, dummy, marchlen=0.3), axis=0)[0]
-            rays[(phi_ix, theta_ix)] = pixels
-    return rays
 
 
 @jit(nopython=True)
