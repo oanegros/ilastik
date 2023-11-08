@@ -62,7 +62,7 @@ import matplotlib as mpl
 
 logger = logging.getLogger(__name__)
 
-# _condition = threading.RLock()
+_condition = threading.RLock()
 pysh.backends.select_preferred_backend(backend="ducc", nthreads=1)
 
 
@@ -72,18 +72,9 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
     # projection order is index in project_()
     projectionorder = [
-        "MAX projection",
-        "MIN projection",
         "SHAPE projection",
         "MEAN projection",
-        "DIST_TO_MAX projection",
     ]
-    detailorder = [
-        "low degrees",
-        "high degrees (undersampled)",
-        "high degrees",
-    ]  # NOTE this is redefined in fill_properties
-
     projections = np.zeros(len(projectionorder), dtype=bool)  # contains selection of which projections should be done
     features = None
     raysLUT = None
@@ -92,7 +83,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
     # Hyperparameters
     scale = 80  # transforms to cube of size scale by scale by scale
-    reduced_spectrum_length = 20  # length of coarse + fine details (averaged)
+    reduced_spectrum_length = 20
 
     def availableFeatures(self, image, labels):
         if labels.ndim < 2 or labels.ndim > 3:
@@ -102,9 +93,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
         names = []
         result = {}
         for proj in self.projectionorder:
-            for ix, scale in enumerate(self.detailorder):
-                name = proj + " - " + scale
-                result[name] = {}
+            name = proj
+            result[name] = {}
 
         result = self.fill_properties(result)
         for f, v in result.items():
@@ -116,27 +106,12 @@ class SphericalProjection(ObjectFeaturesPlugin):
         # fill in the detailed information about the features.
         # features should be a dict with the feature_name as key.
         # NOTE, this function needs to be updated every time skeleton features change
-        detailorder = ["low degrees", "high degrees (undersampled)", "high degrees"]
-        # detailorder needs to be the same as self.detailorder, but cannot inherit due to architectural issues
         for name, feature in features.items():
-            proj, scl = [part.strip() for part in name.split("-")]
-            feature["group"] = proj
             feature["margin"] = 0
-            if scl == detailorder[0]:
-                feature["displaytext"] = proj + " coarse details"
-                feature[
-                    "detailtext"
-                ] = f"Spherical harmonic degrees up to n of a {proj} spherical projection of the data"
-            if scl == detailorder[1]:
-                feature["displaytext"] = proj + " fine details (averaged)"
-                feature[
-                    "detailtext"
-                ] = f"Log2 undersampled spherical harmonic degrees from n of a {proj} spherical projection of the data"
-            if scl == detailorder[2]:
-                feature["displaytext"] = proj + " fine details (all)"
-                feature[
-                    "detailtext"
-                ] = f"Spherical harmonic degrees from n of a {proj} spherical projection of the data; Adds many features."
+            feature["displaytext"] = name + " spectrum"
+            feature[
+                "detailtext"
+            ] = f"20-value undersampled spectrum of a spherical harmonics expansion of spherically projected data. Quantifies radial variance in the object"
         return features
 
     def unwrap_and_expand(self, image, binary_bbox, axes, features):
@@ -147,7 +122,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
         # print(image.shape)
         # print(str(t0)+ "_"+ str(np.count_nonzero(mask_object)), image.shape)
         if self.raysLUT == None:
-            self.raysLUT = self.get_ray_table(len(image.shape))
+            with _condition:
+                self.raysLUT = self.get_ray_table(self.ndim)
         # assert(len(next(iter(self.raysLUT))) == len(image.shape)-1) # switching dims is unsupported, but this to check
 
         # resizing of data is also done for 2D to make the code less convoluted
@@ -157,10 +133,10 @@ class SphericalProjection(ObjectFeaturesPlugin):
         segmented_cube = np.where(mask_cube, cube, -1)
 
         masked_seg_cube = segmented_cube[segmented_cube > 0]
+        # take quantiles for burnt pixels in giant datasets
         minval = np.quantile(masked_seg_cube, 0.01)
         maxval = np.quantile(masked_seg_cube, 0.99)
-        print(maxval, minval)
-        print(np.max(masked_seg_cube), np.min(masked_seg_cube))
+
         masked_seg_cube[masked_seg_cube > maxval] = maxval
         masked_seg_cube[masked_seg_cube < minval] = minval
 
@@ -168,12 +144,9 @@ class SphericalProjection(ObjectFeaturesPlugin):
             masked_seg_cube -= minval
             masked_seg_cube *= 1 / (maxval - minval)
         segmented_cube[segmented_cube > 0] = masked_seg_cube
-        print(np.max(masked_seg_cube), np.min(masked_seg_cube))
-        print(np.max(segmented_cube), np.min(segmented_cube))
         masked_seg_cube = masked_seg_cube * 65536
         t1 = time.time()
 
-        # print(image.shape)
         unwrapped = lookup(segmented_cube, self.raysLUT, int(np.pi * self.scale), self.projections)
 
         t2 = time.time()
@@ -192,28 +165,21 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 power = np.abs(scipy.fft.fft(projection))
             else:
                 zero, w = pysh.expand.SHGLQ(int(np.pi * self.scale))
-                # with _condition:  # shtools backend is not thread-safe, switch to ducc in future see issue #385 in shtools
                 coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
                 power = spectrum(coeffs, unit="per_dlogl", base=2)[1:]
 
-            self.save_prjs(which_proj, spectrum, coeffs, projection, t0, mask_object)
+            # self.save_prjs(which_proj, spectrum, coeffs, projection, t0, mask_object)
 
             # bin higher degrees in 2log spaced bins:
             if self.n_coarse is None:
                 self.get_bins(len(power))
             means = [np.mean(power[s:e]) for s, e in zip(self.bin_start, self.bin_ends)]
-            # print(self.bin_start, self.bin_ends, self.n_coarse)
             # # Bin center values:
             # print(list(np.arange(0,self.n_coarse, dtype=float) ) + [np.mean([start,end]) for start, end in zip(self.bin_start, self.bin_ends)])
 
-            if which_proj + " - " + self.detailorder[0] in self.features:
-                result[which_proj + " - " + self.detailorder[0]] = power[: self.n_coarse]
-            if which_proj + " - " + self.detailorder[1] in self.features:
-                result[which_proj + " - " + self.detailorder[1]] = means
-            if which_proj + " - " + self.detailorder[2] in self.features:
-                result[which_proj + " - " + self.detailorder[2]] = power[self.n_coarse :]
-
+            result[which_proj] = np.concatenate([power[: self.n_coarse], np.array(means)])
         t3 = time.time()
+        # print(result)
         print("time to do full unwrap and expand: \t", t3 - t0)
         return result
 
@@ -226,7 +192,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
     def compute_local(self, image, binary_bbox, features, axes):
         for feature in features:
             for ix, proj in enumerate(self.projectionorder):
-                if proj == features[feature]["group"]:
+                if proj == feature:
                     self.projections[ix] = True
         self.features = features
         orig_bbox = binary_bbox
@@ -380,9 +346,9 @@ class SphericalProjection(ObjectFeaturesPlugin):
 
 # All numba-accelerated functions cannot receive self, so are not class functions
 
-# NOTE: lookup_spherical and lookup_circle are only split because fancy indexing is unsupported in numba
-# and i wanted to avoid checking ndim fore each indexed voxel
-@jit(nopython=True)
+# this traverses all rays
+# Could theoretically be improved to a tree-data-structure, but this adds overhead
+@jit(nopython=True, nogil=True)
 def lookup(img, raysLUT, fineness, projections):
     unwrapped = np.zeros((np.sum(projections), fineness + 1, fineness * 2 + 1), dtype=np.float64)
     for loc, ray in raysLUT.items():
@@ -399,28 +365,17 @@ def lookup(img, raysLUT, fineness, projections):
     return unwrapped
 
 
-@jit(nopython=True)
+@jit(nopython=True, nogil=True)
 def project_(ray, values, projections):
     vals = np.zeros(np.sum(projections), dtype=np.float64)
     proj = 0
-    if projections[0]:  # MAX
-        vals[proj] = np.amax(values)
-        proj += 1
-    if projections[1]:  # MIN
-        vals[proj] = np.amin(values)
-        proj += 1
-    if projections[2]:  # SHAPE
+    if projections[0]:  # SHAPE
         vec = ray[0].astype(np.float64) - ray[len(values) - 1].astype(np.float64)
         vec -= vec < 0  # integer flooring issues
         vals[proj] = np.linalg.norm(vec)
         proj += 1
-    if projections[3]:  # MEAN
+    if projections[1]:  # MEAN
         vals[proj] = np.sum(values) / len(values)
-        proj += 1
-    if projections[4]:  # DIST_TO_MAX
-        vec = ray[0].astype(np.float64) - ray[np.argmax(values)].astype(np.float64)
-        vec -= vec < 0  # integer flooring issues
-        vals[proj] = np.linalg.norm(vec)
         proj += 1
     return vals
 
