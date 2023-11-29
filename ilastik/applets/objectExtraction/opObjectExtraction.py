@@ -42,6 +42,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+global global_count_file
+global_count_file = 0
+
 # ilastik
 try:
     from ilastik.plugins import pluginManager
@@ -707,31 +710,37 @@ class OpRegionFeatures(Operator):
                 if not any("margin" in features for features in feature_dict.values()):
                     continue
 
-                plugin = pluginManager.getPluginByName(plugin_name, "ObjectFeatures")
-                tmp_dicts = [None] * nobj
+        if numpy.any(margin) > 0:
+            # starting from 0, we stripped 0th background object in global computation
+            for i in range(0, nobj):
+                logger.debug("processing object {}".format(i))
+                extent = self.compute_extent(i, image, mincoords, maxcoords, axes, margin)
+                rawbbox = self.compute_rawbbox(image, extent, axes)
+                # it's i+1 here, because the background has label 0
+                binary_bbox = numpy.where(labels[tuple(extent)] == i + 1, 1, 0).astype(bool)
 
-                def _calc_single(i, raw_bbox, binary_bbox):
-                    feats = plugin.plugin_object.compute_local(raw_bbox, binary_bbox, feature_dict, axes)
-                    tmp_dicts[i] = feats
+                for plugin_name, feature_dict in feature_names.items():
+                    if not has_local_features[plugin_name]:
+                        continue
+                    plugin = pluginManager.getPluginByName(plugin_name, "ObjectFeatures")
+                    feats = plugin.plugin_object.compute_local(rawbbox, binary_bbox, feature_dict, axes)
+                    local_features[plugin_name] = dictextend(local_features[plugin_name], feats)
+                global global_count_file
+                if i == 0:
+                    global_count_file += 1
+                # print(i,global_count_file)
+                # margin1 = [(numpy.min(dim), numpy.max(dim) + 1) for dim in numpy.nonzero(binary_bbox)]
 
-                with RequestPool() as pool:
-                    # starting from 0, we stripped 0th background object in global computation
-                    for i in range(nobj):
-                        logger.debug("processing object {}".format(i))
-                        if i not in bboxes:
-                            extent = self.compute_extent(i, image, mincoords, maxcoords, axes, margin)
-                            raw_bbox = self.compute_rawbbox(image, extent, axes)
-                            # it's i+1 here, because the background has label 0
-                            binary_bbox = labels[tuple(extent)] == i + 1
-                            bboxes[i] = (raw_bbox, binary_bbox)
-
-                        raw_bbox, binary_bbox = bboxes[i]
-                        pool.add(Request(partial(_calc_single, i, raw_bbox, binary_bbox)))
-
-                # merge the results
-                for feature_dict in tmp_dicts:
-                    for feature_name, features in feature_dict.items():
-                        local_features[plugin_name][feature_name].append(features)
+                # objdata = rawbbox[margin1[0][0] : margin1[0][1], margin1[1][0] : margin1[1][1], margin1[2][0] : margin1[2][1],0]
+                # mask = binary_bbox[margin1[0][0] : margin1[0][1], margin1[1][0] : margin1[1][1], margin1[2][0] : margin1[2][1]]
+                # masked = numpy.where(mask, objdata, 0) 
+                # import tifffile
+                # from pathlib import Path
+                # Path(f"Z:\Oane\data\separate_nuclei\{global_count_file}").mkdir(parents=True, exist_ok=True)
+                # metadata = {}
+                # metadata['axes'] = 'zyx'
+                # tifffile.imwrite(f"Z:\Oane\data\separate_nuclei\{global_count_file}\{i}.tif", masked, )
+                # # breakpoint()
 
         logger.debug("computing done, removing failures")
         # remove local features that failed

@@ -460,11 +460,10 @@ class ExportFile(object):
                             )
                             count += 1
                             self.ExportProgress(count * 100 / len(self.table_dict))
-                except ValueError as e:
-                    if libver == "latest":
-                        logger.error("latest version of HDF5 export failed in export")
-                        raise
-                    logger.warning(f"Writing {libver} H5 failed, attempting more recent format: {e} ")
+
+                except ValueError:
+                    print("Writing most compatible H5 failed, attempting HDF5 v1.8 format")
+                    logger.warning("Writing most compatible H5 failed, attempting HDF5 v1.8 format")
                     count = 0
                     self.ExportProgress(0)
                     continue
