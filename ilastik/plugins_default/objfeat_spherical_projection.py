@@ -132,19 +132,6 @@ class SphericalProjection(ObjectFeaturesPlugin):
         mask_cube = resize(img_as_bool(mask_object), tuple([self.scale] * len(image.shape)), order=0)
         segmented_cube = np.where(mask_cube, cube, -1)
 
-        masked_seg_cube = segmented_cube[segmented_cube > 0]
-        # take quantiles for burnt pixels in giant datasets
-        minval = np.quantile(masked_seg_cube, 0.01)
-        maxval = np.quantile(masked_seg_cube, 0.99)
-
-        masked_seg_cube[masked_seg_cube > maxval] = maxval
-        masked_seg_cube[masked_seg_cube < minval] = minval
-
-        if minval != maxval:
-            masked_seg_cube -= minval
-            masked_seg_cube *= 1 / (maxval - minval)
-        segmented_cube[segmented_cube > 0] = masked_seg_cube
-        masked_seg_cube = masked_seg_cube * 65536
         t1 = time.time()
 
         unwrapped = lookup(segmented_cube, self.raysLUT, int(np.pi * self.scale), self.projections)
@@ -158,6 +145,9 @@ class SphericalProjection(ObjectFeaturesPlugin):
         used_projections = [which_proj for which_proj, projected in enumerate(self.projections) if projected]
         for projectedix, projection in enumerate(unwrapped):
             which_proj = self.projectionorder[used_projections[projectedix]]
+            projection -= np.min(projection)
+            if np.max(projection) != 0:
+                projection /= np.max(projection)
 
             projectedix += 1
             if self.ndim == 2:
@@ -166,21 +156,21 @@ class SphericalProjection(ObjectFeaturesPlugin):
             else:
                 zero, w = pysh.expand.SHGLQ(int(np.pi * self.scale))
                 coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
-                power = spectrum(coeffs, unit="per_dlogl", base=2)[1:]
-
-            # self.save_prjs(which_proj, spectrum, coeffs, projection, t0, mask_object)
+                power = spectrum(coeffs, unit="per_l")
+                power *= np.arange(len(power)) + 1 / np.log(2)
+            # self.save_prjs(which_proj, spectrum, projection, t0, coeffs, mask_object)
 
             # bin higher degrees in 2log spaced bins:
             if self.n_coarse is None:
                 self.get_bins(len(power))
             means = [np.mean(power[s:e]) for s, e in zip(self.bin_start, self.bin_ends)]
+
             # # Bin center values:
             # print(list(np.arange(0,self.n_coarse, dtype=float) ) + [np.mean([start,end]) for start, end in zip(self.bin_start, self.bin_ends)])
 
             result[which_proj] = np.concatenate([power[: self.n_coarse], np.array(means)])
         t3 = time.time()
-        # print(result)
-        print("time to do full unwrap and expand: \t", t3 - t0)
+        # print("time to do full unwrap and expand: \t", t3 - t0)
         return result
 
     def _do_3d(self, image, binary_bbox, features, axes):
@@ -264,7 +254,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         saveable[saveable == -1] = 0
         saveable = (saveable * 255 / np.max(segmented_cube)).astype(np.uint8)
         tifffile.imwrite(
-            "/Users/oanegros/Documents/screenshots/tmp/"
+            "/Users/oanegros/Documents/screenshots/tmp39/"
             + str(t0)
             + "_"
             + str(np.count_nonzero(mask_object))
@@ -279,7 +269,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         saveable = rawbbox
         saveable = np.where(mask_object, rawbbox, 0)
         tifffile.imwrite(
-            "/Users/oanegros/Documents/screenshots/tmp/"
+            "/Users/oanegros/Documents/screenshots/tmp39/"
             + str(t0)
             + "_"
             + str(np.count_nonzero(mask_object))
@@ -292,7 +282,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         )
         return
 
-    def save_prjs(self, which_proj, spectrum, coeffs, projection, t0, mask_object):
+    def save_prjs(self, which_proj, spectrum, projection, t0, coeffs, mask_object):
         # PNG SAVE
         # print(projection)
         path = (
@@ -311,15 +301,15 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 projection, (int(np.pi * self.scale) + 1, int(np.pi * self.scale) * 2 + 1), preserve_range=True, order=0
             ),
         )
-        # # SHTOOLS full coeffs
-        # pysh.SHCoeffs.from_array(coeffs).to_file(
-        #     "/Users/oanegros/Documents/screenshots/tmp/"
-        #     + str(t0)
-        #     + "_coeffs_"
-        #     + str(np.count_nonzero(mask_object == 0))
-        #     + which_proj
-        #     + ".shtools",
-        # )
+        # SHTOOLS full coeffs
+        pysh.SHCoeffs.from_array(coeffs).to_file(
+            "/Users/oanegros/Documents/screenshots/tmp/"
+            + str(t0)
+            + "_coeffs_"
+            + str(np.count_nonzero(mask_object == 0))
+            + which_proj
+            + ".shtools",
+        )
         # 1D Spectrum
         pysh.SHCoeffs.from_array(coeffs).plot_spectrum(
             show=False,
@@ -327,20 +317,20 @@ class SphericalProjection(ObjectFeaturesPlugin):
             fname=path.format(type="spectrum", suffix="png"),
         )
 
-        # # TIF SAVE PROJ
-        # projection = 65535 * ((projection - np.min(projection)) / (np.max(projection) - np.min(projection)))
-        # tifffile.imwrite(
-        #     "/Users/oanegros/Documents/screenshots/tmp/"
-        #     + str(t0)
-        #     + "_"
-        #     + str(np.count_nonzero(mask_object))
-        #     + "_"
-        #     + str(np.count_nonzero(mask_object == 0))
-        #     + which_proj
-        #     + "unwrapGLQ_masked.tif",
-        #     projection.astype(np.uint16),
-        #     imagej=True,
-        # )
+        # TIF SAVE PROJ
+        projection = 65535 * ((projection - np.min(projection)) / (np.max(projection) - np.min(projection)))
+        tifffile.imwrite(
+            "/Users/oanegros/Documents/screenshots/tmp/"
+            + str(t0)
+            + "_"
+            + str(np.count_nonzero(mask_object))
+            + "_"
+            + str(np.count_nonzero(mask_object == 0))
+            + which_proj
+            + "unwrapGLQ_masked.tif",
+            projection.astype(np.uint16),
+            imagej=True,
+        )
         return
 
 
