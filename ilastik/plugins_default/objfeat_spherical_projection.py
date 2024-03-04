@@ -81,6 +81,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
     bin_start, bin_ends, n_coarse = None, None, None
     ndim = 0
 
+    debug_projection_output = False
+
     # Hyperparameters
     scale = 80  # transforms to cube of size scale by scale by scale
     reduced_spectrum_length = 20
@@ -145,19 +147,22 @@ class SphericalProjection(ObjectFeaturesPlugin):
         used_projections = [which_proj for which_proj, projected in enumerate(self.projections) if projected]
         for projectedix, projection in enumerate(unwrapped):
             which_proj = self.projectionorder[used_projections[projectedix]]
+            if self.ndim == 2:
+                projection = projection[0, : int(self.scale * np.pi)]
             projection -= np.min(projection)
             if np.max(projection) != 0:
                 projection /= np.max(projection)
-
+            projection -= np.mean(projection)
+            print(np.min(projection), np.max(projection), np.mean(projection))
             projectedix += 1
             if self.ndim == 2:
-                projection = projection[0, : int(self.scale * np.pi)]
-                power = np.abs(scipy.fft.fft(projection))
+                coeffs = scipy.fft.rfft(projection)
+                power = np.abs(coeffs)
             else:
                 zero, w = pysh.expand.SHGLQ(int(np.pi * self.scale))
                 coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
                 power = spectrum(coeffs, unit="per_l")
-                power *= np.arange(len(power)) + 1 / np.log(2)
+                # power *= (np.arange(len(power)))
             # self.save_prjs(which_proj, spectrum, projection, t0, coeffs, mask_object)
 
             # bin higher degrees in 2log spaced bins:
@@ -165,12 +170,15 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 self.get_bins(len(power))
             means = [np.mean(power[s:e]) for s, e in zip(self.bin_start, self.bin_ends)]
 
-            # # Bin center values:
+            # Bin center values:
             # print(list(np.arange(0,self.n_coarse, dtype=float) ) + [np.mean([start,end]) for start, end in zip(self.bin_start, self.bin_ends)])
-
-            result[which_proj] = np.concatenate([power[: self.n_coarse], np.array(means)])
+            if self.debug_projection_output:
+                result[which_proj] = projection.flatten()
+            else:
+                result[which_proj] = np.concatenate([power[: self.n_coarse], np.array(means)])
         t3 = time.time()
-        # print("time to do full unwrap and expand: \t", t3 - t0)
+        print("time to do full unwrap and expand: \t", t3 - t0)
+        print(result)
         return result
 
     def _do_3d(self, image, binary_bbox, features, axes):
@@ -301,36 +309,37 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 projection, (int(np.pi * self.scale) + 1, int(np.pi * self.scale) * 2 + 1), preserve_range=True, order=0
             ),
         )
+        np.save(path.format(type="project", suffix="npy"), projection)
         # SHTOOLS full coeffs
-        pysh.SHCoeffs.from_array(coeffs).to_file(
-            "/Users/oanegros/Documents/screenshots/tmp/"
-            + str(t0)
-            + "_coeffs_"
-            + str(np.count_nonzero(mask_object == 0))
-            + which_proj
-            + ".shtools",
-        )
-        # 1D Spectrum
-        pysh.SHCoeffs.from_array(coeffs).plot_spectrum(
-            show=False,
-            unit="per_dlogl",
-            fname=path.format(type="spectrum", suffix="png"),
-        )
+        # pysh.SHCoeffs.from_array(coeffs).to_file(
+        #     "/Users/oanegros/Documents/screenshots/tmp/"
+        #     + str(t0)
+        #     + "_coeffs_"
+        #     + str(np.count_nonzero(mask_object == 0))
+        #     + which_proj
+        #     + ".shtools",
+        # )
+        # # 1D Spectrum
+        # pysh.SHCoeffs.from_array(coeffs).plot_spectrum(
+        #     show=False,
+        #     unit="per_dlogl",
+        #     fname=path.format(type="spectrum", suffix="png"),
+        # )
 
         # TIF SAVE PROJ
-        projection = 65535 * ((projection - np.min(projection)) / (np.max(projection) - np.min(projection)))
-        tifffile.imwrite(
-            "/Users/oanegros/Documents/screenshots/tmp/"
-            + str(t0)
-            + "_"
-            + str(np.count_nonzero(mask_object))
-            + "_"
-            + str(np.count_nonzero(mask_object == 0))
-            + which_proj
-            + "unwrapGLQ_masked.tif",
-            projection.astype(np.uint16),
-            imagej=True,
-        )
+        # projection = 65535 * ((projection - np.min(projection)) / (np.max(projection) - np.min(projection)))
+        # tifffile.imwrite(
+        #     "/Users/oanegros/Documents/screenshots/tmp/"
+        #     + str(t0)
+        #     + "_"
+        #     + str(np.count_nonzero(mask_object))
+        #     + "_"
+        #     + str(np.count_nonzero(mask_object == 0))
+        #     + which_proj
+        #     + "unwrapGLQ_masked.tif",
+        #     projection.astype(np.uint16),
+        #     imagej=True,
+        # )
         return
 
 
