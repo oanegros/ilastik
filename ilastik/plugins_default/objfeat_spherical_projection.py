@@ -170,7 +170,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
             # bin higher degrees in 2log spaced bins:
             if self.n_coarse is None:
                 self.get_bins(len(power))
-            means = [np.mean(power[s:e]) for s, e in zip(self.bin_start, self.bin_ends)]
+            means = [np.sum(power[s:e]) for s, e in zip(self.bin_start, self.bin_ends)]
 
             # Bin center values:
             # print(list(np.arange(0,self.n_coarse, dtype=float) ) + [np.mean([start,end]) for start, end in zip(self.bin_start, self.bin_ends)])
