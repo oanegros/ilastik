@@ -152,8 +152,10 @@ class SphericalProjection(ObjectFeaturesPlugin):
             projection -= np.min(projection)
             if np.max(projection) != 0:
                 projection /= np.max(projection)
+                projection /= np.std(projection)
             projection -= np.mean(projection)
             print(np.min(projection), np.max(projection), np.mean(projection))
+
             projectedix += 1
             if self.ndim == 2:
                 coeffs = scipy.fft.rfft(projection)
@@ -176,7 +178,10 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 result[which_proj] = projection.flatten()
             else:
                 result[which_proj] = np.concatenate([power[: self.n_coarse], np.array(means)])
+                # result[which_proj] = power
+            print(np.var(projection), np.sum(power))
         t3 = time.time()
+
         print("time to do full unwrap and expand: \t", t3 - t0)
         print(result)
         return result
