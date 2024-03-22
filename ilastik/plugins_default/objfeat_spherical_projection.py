@@ -79,9 +79,10 @@ class SphericalProjection(ObjectFeaturesPlugin):
     features = None
     raysLUT = None
     bin_start, bin_ends, n_coarse = None, None, None
-    ndim = 0
+    # ndim = 0
 
-    debug_projection_output = False
+    debug_projection_output = True
+    debug_peak_output = False
 
     # Hyperparameters
     scale = 80  # transforms to cube of size scale by scale by scale
@@ -90,8 +91,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
     def availableFeatures(self, image, labels):
         if labels.ndim < 2 or labels.ndim > 3:
             return {}
-        self.ndim = labels.ndim
-
+        self.ndim = labels.ndim  # BUG This only gets set in UI version
+        # self.ndim = 2
         names = []
         result = {}
         for proj in self.projectionorder:
@@ -147,39 +148,62 @@ class SphericalProjection(ObjectFeaturesPlugin):
         used_projections = [which_proj for which_proj, projected in enumerate(self.projections) if projected]
         for projectedix, projection in enumerate(unwrapped):
             which_proj = self.projectionorder[used_projections[projectedix]]
+            # self.ndim=2
             if self.ndim == 2:
                 projection = projection[0, : int(self.scale * np.pi)]
-            projection -= np.min(projection)
+
             if np.max(projection) != 0:
-                projection /= np.max(projection)
                 projection /= np.std(projection)
             projection -= np.mean(projection)
-            print(np.min(projection), np.max(projection), np.mean(projection))
 
             projectedix += 1
             if self.ndim == 2:
-                coeffs = scipy.fft.rfft(projection)
-                power = np.abs(coeffs)
+                coeffs = scipy.fft.fft(projection)
+                power = np.abs(coeffs * coeffs.conjugate() / len(projection) ** 2)
+                power = power[: (len(projection) // 2) + 1] * 2  # keep area under curve 1, remove symmetry
             else:
                 zero, w = pysh.expand.SHGLQ(int(np.pi * self.scale))
                 coeffs = pysh.expand.SHExpandGLQ(projection, w=w, zero=zero)
                 power = spectrum(coeffs, unit="per_l")
-                # power *= (np.arange(len(power)))
-            # self.save_prjs(which_proj, spectrum, projection, t0, coeffs, mask_object)
 
             # bin higher degrees in 2log spaced bins:
             if self.n_coarse is None:
                 self.get_bins(len(power))
             means = [np.sum(power[s:e]) for s, e in zip(self.bin_start, self.bin_ends)]
+            # print(np.sum(power))
 
             # Bin center values:
+
+            # print(np.sum(power[:125] - power[126:]))
+            # print(np.sum(power[126:]))
+            freqs = scipy.fft.fftfreq(251)[: (len(projection) // 2) + 1]
+            # print([freqs[i] for i in np.arange(0,self.n_coarse)])
+            # print([np.mean(freqs[s:e]) for s, e in zip(self.bin_start, self.bin_ends)])
             # print(list(np.arange(0,self.n_coarse, dtype=float) ) + [np.mean([start,end]) for start, end in zip(self.bin_start, self.bin_ends)])
             if self.debug_projection_output:
+                print(np.var(projection), np.max(projection))
                 result[which_proj] = projection.flatten()
+            elif self.debug_peak_output:
+                print(self.ndim, projection.shape)
+                decomp = scipy.fft.rfft(projection)
+
+                filtered = []
+                for ix, val in enumerate(decomp):
+                    if ix >= 2 and ix <= 10:
+                        filtered.append(val)
+                    else:
+                        filtered.append(0 + 0j)
+                # print(filtered, decomp)
+                projection = scipy.fft.irfft(decomp)
+                peak = np.argmax(projection)
+                print(peak, projection.shape)
+                peak /= projection.shape[0]
+                peak *= np.pi * 2
+                result[which_proj] = peak
             else:
                 result[which_proj] = np.concatenate([power[: self.n_coarse], np.array(means)])
                 # result[which_proj] = power
-            print(np.var(projection), np.sum(power))
+
         t3 = time.time()
 
         print("time to do full unwrap and expand: \t", t3 - t0)
