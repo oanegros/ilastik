@@ -1,6 +1,6 @@
 [Core]
-Name = Spherical texture
-Module = objfeat_spherical_projection
+Name = Spherical Texture
+Module = objfeat_spherical_projection_3D
 
 [Documentation]
 Author = Oane Gros

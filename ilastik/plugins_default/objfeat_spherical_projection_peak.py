@@ -66,7 +66,7 @@ _condition = threading.RLock()
 pysh.backends.select_preferred_backend(backend="ducc", nthreads=1)
 
 
-class SphericalProjection(ObjectFeaturesPlugin):
+class SphericalProjectionOld(ObjectFeaturesPlugin):
     ndim = None
     margin = 0  # necessary for calling compute_local
 
@@ -81,8 +81,8 @@ class SphericalProjection(ObjectFeaturesPlugin):
     bin_start, bin_ends, n_coarse = None, None, None
     # ndim = 0
 
-    debug_projection_output = True
-    debug_peak_output = False
+    debug_projection_output = False
+    debug_peak_output = True
 
     # Hyperparameters
     scale = 80  # transforms to cube of size scale by scale by scale
@@ -92,7 +92,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         if labels.ndim < 2 or labels.ndim > 3:
             return {}
         self.ndim = labels.ndim  # BUG This only gets set in UI version
-        # self.ndim = 2
+        self.ndim = 3
         names = []
         result = {}
         for proj in self.projectionorder:
@@ -148,7 +148,7 @@ class SphericalProjection(ObjectFeaturesPlugin):
         used_projections = [which_proj for which_proj, projected in enumerate(self.projections) if projected]
         for projectedix, projection in enumerate(unwrapped):
             which_proj = self.projectionorder[used_projections[projectedix]]
-            # self.ndim=2
+            self.ndim = 3
             if self.ndim == 2:
                 projection = projection[0, : int(self.scale * np.pi)]
 
@@ -184,20 +184,9 @@ class SphericalProjection(ObjectFeaturesPlugin):
                 print(np.var(projection), np.max(projection))
                 result[which_proj] = projection.flatten()
             elif self.debug_peak_output:
-                print(self.ndim, projection.shape)
-                decomp = scipy.fft.rfft(projection)
-
-                filtered = []
-                for ix, val in enumerate(decomp):
-                    if ix >= 2 and ix <= 10:
-                        filtered.append(val)
-                    else:
-                        filtered.append(0 + 0j)
-                # print(filtered, decomp)
-                projection = scipy.fft.irfft(decomp)
-                peak = np.argmax(projection)
-                print(peak, projection.shape)
-                peak /= projection.shape[0]
+                # optional: add bandpassing here
+                peak = np.unravel_index(np.argmax(projection, axis=None), projection.shape)
+                peak /= np.array(projection.shape)
                 peak *= np.pi * 2
                 result[which_proj] = peak
             else:
